@@ -295,7 +295,7 @@ def test_corporate_qualification_completion_end_to_end(tmp_path: Path) -> None:
     final = qualifier.update_and_qualify("9876543210", "corporate_event")
 
     assert final.qualified
-    assert "Qualification complete" in final.response
+    assert "captured all the information" in final.response
     assert final.summary == {
         "qualified": True,
         "event_type": "corporate",
@@ -677,7 +677,7 @@ def test_qualification_completion_response(tmp_path: Path) -> None:
     qualifier.update_and_qualify("Siddharth", "corporate_event")
     final = qualifier.update_and_qualify("9876543210", "corporate_event")
     assert final.qualified
-    assert "Qualification complete" in final.response
+    assert "captured all the information" in final.response
 
 
 def test_no_recommendation_leak_during_qualification(tmp_path: Path) -> None:
@@ -765,7 +765,7 @@ def test_full_corporate_flow_end_to_end(tmp_path: Path) -> None:
     assert agent.memory.data["phone"] == "9876543210"
     # Either the QA completion message or the handoff message is correct;
     # both indicate successful qualification.
-    assert "Qualification complete" in r7 or "connect you" in r7
+    assert "captured all the information" in r7 or "connect you" in r7
 
 
 def test_invalid_name_input_asks_again(tmp_path: Path) -> None:

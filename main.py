@@ -102,7 +102,15 @@ def run_text_loop(args: argparse.Namespace) -> None:
 def run_voice_loop(args: argparse.Namespace) -> None:
     agent = build_agent(args)
     agent.memory.reset()
+    print("Loading Whisper voice model...")
     voice_in = VoiceInput(model_name=args.whisper_model, language="en", debug=args.debug)
+    # Warm up / pre-load Whisper model to avoid lag on first turn
+    try:
+        import whisper
+        voice_in._model = whisper.load_model(args.whisper_model)
+        print("Whisper voice model loaded.")
+    except Exception as e:
+        print(f"Warning: could not pre-load Whisper: {e}")
     voice_out = VoiceOutput(enabled=True, debug=args.debug)
     logger = TranscriptLogger(BASE_DIR / "logs" / "conversations")
 

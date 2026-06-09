@@ -110,6 +110,13 @@ class VoiceInput:
             dtype="float32",
             blocksize=block_size,
         ) as stream:
+            # Wait for any initial TTS tail or noise to clear (up to 1.5 seconds)
+            for _ in range(int(1.5 / 0.05)):
+                block, _ = stream.read(block_size)
+                rms = float(np.sqrt(np.mean(np.square(block))))
+                if rms < self.speech_threshold:
+                    break
+
             for _ in range(max_blocks):
                 block, _ = stream.read(block_size)
                 rms = float(np.sqrt(np.mean(np.square(block))))

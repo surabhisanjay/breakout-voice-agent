@@ -100,11 +100,20 @@ class QualificationAgent:
         current = self.qualify(active_intent)
         expected = current.missing_fields[0] if current.missing_fields else ""
 
+        # Capture the field value explicitly
+        self._capture_expected_field(message, expected, active_intent)
+        # Also run generic memory extraction (location, participants, etc.)
+        self.memory.update_from_message(message, active_intent)
+        self._capture_bare_count(message, active_intent)
+
+        # Re-evaluate
+        after = self.qualify(active_intent)
+
+        new_field_captured = len(after.missing_fields) < len(current.missing_fields)
+
         # Only validate/reject the message if we have already explicitly asked
-        # this field on the previous turn.  On the first mention of an intent
-        # (e.g. "We need an event for 15 employees") the agent hasn't asked for
-        # a specific field yet, so we must not reject the message.
-        if self._waiting_for == expected:
+        # this field on the previous turn, and no new field was captured.
+        if self._waiting_for == expected and not new_field_captured:
             invalid_response = self._invalid_response_for_expected_field(message, expected)
             if invalid_response:
                 # Don't advance; keep _waiting_for the same field
@@ -115,15 +124,6 @@ class QualificationAgent:
                     summary=self._summary(False),
                     response=invalid_response,
                 )
-
-        # Capture the field value explicitly
-        self._capture_expected_field(message, expected, active_intent)
-        # Also run generic memory extraction (location, participants, etc.)
-        self.memory.update_from_message(message, active_intent)
-        self._capture_bare_count(message, active_intent)
-
-        # Re-evaluate
-        after = self.qualify(active_intent)
 
         # Record which field we are now asking for, so next turn can validate
         self._waiting_for = after.missing_fields[0] if after.missing_fields else ""
@@ -148,8 +148,8 @@ class QualificationAgent:
         if after.qualified:
             name = str(self.memory.data.get("customer_name", ""))
             if name:
-                return f"Thank you, {name}. Qualification complete. I've captured all the details needed."
-            return "Qualification complete. I've captured all the details needed."
+                return f"Perfect. Thank you, {name}. I've captured all the information I need. Someone from our team will reach out to you shortly."
+            return "Perfect. I've captured all the information I need. Someone from our team will reach out to you shortly."
 
         next_question = after.next_question
         ack = self._ack_for_captured_field(captured_field)

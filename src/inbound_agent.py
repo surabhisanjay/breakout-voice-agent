@@ -73,6 +73,7 @@ class InboundAgent:
         if recommendation.option:
             self.memory.update_from_message(normalized_message, intent_result.intent, recommendation.option)
 
+        waiting_before = self.qualification_agent._waiting_for
         # Run the qualification agent — this validates + captures the current expected field
         # and returns the next question (or completion).
         qual_result = self.qualification_agent.update_and_qualify(normalized_message, intent_result.intent)
@@ -80,7 +81,7 @@ class InboundAgent:
         handoff_ready = self.memory.handoff_ready(intent_result.intent)
         route = self.router.route(intent_result.intent, qual_result.qualified)
         response = self._generate_response(
-            normalized_message, intent_result.intent, recommendation, handoff_ready, qual_result
+            normalized_message, intent_result.intent, recommendation, handoff_ready, qual_result, waiting_before
         )
         response = self._clean_response(response)
 
@@ -110,8 +111,8 @@ class InboundAgent:
             "handoff_summary": handoff,
         }
 
-    def _generate_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None) -> str:
-        response = self._fallback_response(message, intent, recommendation, should_handoff, qual_result)
+    def _generate_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None, waiting_before: str = "") -> str:
+        response = self._fallback_response(message, intent, recommendation, should_handoff, qual_result, waiting_before)
         if response:
             return response
 
@@ -183,8 +184,35 @@ class InboundAgent:
                 except Exception:
                     pass
 
-    def _fallback_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None) -> str:
+    def _fallback_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None, waiting_before: str = "") -> str:
         lowered = message.lower()
+        _flow_fields = set(self.memory.FLOW_FIELDS.get(intent, []))
+
+        # ================================================================== #
+        # CONVERSATION OWNERSHIP GATE                                          #
+        #                                                                      #
+        # When the QualificationAgent is actively waiting for a specific field #
+        # it OWNS the conversation.  Nothing else may respond — not the FAQ    #
+        # engine, not the comparison handler, not the recommendation engine.   #
+        #                                                                      #
+        # This is the single source of truth for the "Yes → food_required"    #
+        # problem: "Yes" would otherwise match _is_yes_to_compare() and emit  #
+        # Murder Mystery comparison text while food_required stays blank.      #
+        # ================================================================== #
+        is_direct = self._is_direct_user_inquiry(message, intent)
+        if waiting_before and waiting_before not in _flow_fields and not is_direct:
+            route_check = self.router.route(intent, False)
+            if route_check.next_agent == "qualification_agent":
+                # QA owns this turn — return its validated response directly.
+                # qual_result already ran update_and_qualify(), so the field
+                # has been captured (or rejected) and the next question chosen.
+                if qual_result is not None and qual_result.response:
+                    return qual_result.response
+
+        # ------------------------------------------------------------------  #
+        # From here down: QA is NOT actively waiting (first turn of a new     #
+        # intent, or escape_room flow, or general FAQ).                        #
+        # ------------------------------------------------------------------  #
 
         if self._is_breakout_greeting(lowered):
             return "Yes, this is Breakout Escape Rooms. How may I help you today?"
@@ -217,30 +245,28 @@ class InboundAgent:
 
         if should_handoff:
             route = self.router.route(intent, True)
-            return f"Perfect. I have the details I need. I will connect you with our {route.next_agent.replace('_', ' ')}."
+            name = str(self.memory.data.get("customer_name", ""))
+            if name:
+                return f"Perfect. Thank you, {name}. I've captured all the information I need. Someone from our team will reach out to you shortly."
+            return "Perfect. I've captured all the information I need. Someone from our team will reach out to you shortly."
 
         guided_response = self._guided_response(message, intent, recommendation)
         if guided_response:
             return guided_response
 
         # ------------------------------------------------------------------ #
-        # QUALIFICATION GUARD                                                  #
-        # After _guided_response returns empty (no contextual response),       #
-        # delegate fully to the QualificationAgent when it is in control.      #
-        # This prevents Bug 1 (response mixing) and Bug 5 (recommendation leak)#
-        # Only fires when the QA is actively waiting for a specific field.     #
+        # SECONDARY QA GUARD                                                   #
+        # Fires after _guided_response when _waiting_for is NOT yet set       #
+        # (i.e. first turn after all FLOW_FIELDS are collected but QA hasn't  #
+        # explicitly asked for the next field yet).                            #
         # ------------------------------------------------------------------ #
-        # The QA guard only fires for fields that the FLOW_FIELDS mechanism does
-        # NOT cover (e.g. food_required, budget_range, customer_name, phone).
-        # For standard fields (location, participants, preferred_date, age_group)
-        # the existing guided_response / flow_missing path provides richer messages.
-        _flow_fields = set(self.memory.FLOW_FIELDS.get(intent, []))
+        next_expected = self.qualification_agent._waiting_for
         if (
             qual_result is not None
             and not qual_result.qualified
             and qual_result.response
-            and self.qualification_agent._waiting_for
-            and self.qualification_agent._waiting_for not in _flow_fields
+            and next_expected not in _flow_fields
+            and (waiting_before or self.memory.flow_complete(intent))
         ):
             route_check = self.router.route(intent, False)
             if route_check.next_agent == "qualification_agent":
@@ -263,11 +289,11 @@ class InboundAgent:
             if intent == "escape_room_inquiry":
                 return self._recommendation_response(intent, recommendation.option, recommendation.reason)
 
-            # For non-escape-room intents after flow fields are collected, if
-            # qualification is still running (name/phone pending) return the
-            # qual response, not a recommendation blurb.
-            if qual_result is not None and not qual_result.qualified and qual_result.response:
-                return qual_result.response
+            # Non-escape-room with recommendation: QA may still have contact fields pending
+            next_expected = self.qualification_agent._waiting_for
+            if next_expected not in _flow_fields:
+                if qual_result is not None and not qual_result.qualified and qual_result.response:
+                    return qual_result.response
 
             contact_missing = self.memory.missing_fields(intent=intent, include_contact=True)
             if contact_missing and self._message_contains_contact_detail(message):
@@ -648,3 +674,15 @@ class InboundAgent:
         cleaned = re.sub(r"(?im)^(intent|confidence|route|handoff|debug|analysis|reasoning)\s*:.*$", "", cleaned)
         cleaned = " ".join(line.strip() for line in cleaned.splitlines() if line.strip())
         return cleaned
+
+    def _is_direct_user_inquiry(self, message: str, intent: str) -> bool:
+        lowered = message.lower()
+        if intent in ("general_faq", "cancellation_request", "escape_room_inquiry"):
+            return True
+        if self._is_direct_question(lowered):
+            return True
+        if self._asks_for_room_suggestion(lowered) or self._asks_for_more_details(lowered):
+            return True
+        if intent == "corporate_event" and self._asks_for_room_suggestion(lowered):
+            return True
+        return False
