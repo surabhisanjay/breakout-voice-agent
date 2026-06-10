@@ -14,7 +14,7 @@ from .knowledge_loader import KnowledgeBase
 from .knowledge_retriever import KnowledgeRetriever
 from .qualification_agent import QualificationAgent
 from .recommendation_engine import RecommendationEngine
-from .router import Router
+from .router import Router, RouteDecision
 
 
 class InboundAgent:
@@ -25,12 +25,37 @@ class InboundAgent:
         prompt_path: str | Path,
         model: str = "qwen3:8b",
         use_ollama: bool = True,
+        use_openai: bool | None = None,
     ):
         self.knowledge_base = knowledge_base
         self.memory = memory
         self.prompt_template = Path(prompt_path).read_text(encoding="utf-8")
         self.model = model
         self.use_ollama = use_ollama
+        # Load .env file at runtime if present so `OPENAI_API_KEY` can be read.
+        try:
+            repo_root = Path(__file__).resolve().parents[1]
+            env_file = repo_root / ".env"
+            if env_file.exists():
+                for raw in env_file.read_text(encoding="utf-8").splitlines():
+                    line = raw.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('\"').strip("\'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+        # If use_openai not explicitly set, enable it when OPENAI_API_KEY exists in environment
+        if use_openai is None:
+            self.use_openai = bool(os.environ.get("OPENAI_API_KEY"))
+        else:
+            self.use_openai = use_openai
         self.intent_detector = IntentDetector()
         self.recommender = RecommendationEngine()
         self.router = Router()
@@ -38,6 +63,7 @@ class InboundAgent:
         self.retriever = KnowledgeRetriever(knowledge_base)
         self.qualification_agent = QualificationAgent(memory)
         self.last_ollama_error = ""
+        self.last_openai_error = ""
 
     def handle_message(self, message: str) -> dict:
         normalized_message = self.memory.normalize_number_words(message)
@@ -88,6 +114,32 @@ class InboundAgent:
         self.memory.add_turn("agent", response)
         handoff = self.handoff_generator.generate(self.memory.data) if handoff_ready else None
 
+        # Auto-route budget/pricing queries to booking_agent when user opted-in for booking flow
+        if (
+            re.search(r"\b(budget|pricing|price|cost|how much)\b", normalized_message.lower())
+        ):
+            # Force route to booking agent and generate handoff if missing
+            route = RouteDecision("booking_agent", "Budget/pricing routed to booking_agent.", True)
+            if not handoff:
+                handoff = self.handoff_generator.generate(self.memory.data)
+            # Override response to indicate booking is starting
+            response = "Okay — I'll start the booking process and check availability. One moment please."
+
+        # If this route hands off to booking, attempt to run the LangGraph booking node
+        booking_result = None
+        try:
+            if handoff and route["next_agent"] == "booking_agent" and route["should_handoff"]:
+                try:
+                    from integrations.langgraph_booking_node import booking_node_handler
+
+                    # Require payment could be decided from intent or memory; default False here.
+                    booking_result = booking_node_handler(handoff, require_payment=False)
+                except Exception as exc:
+                    booking_result = {"status": "error", "reason": str(exc)}
+        except Exception:
+            # Defensive: do not let booking integration break the main flow
+            booking_result = {"status": "error", "reason": "booking_integration_failure"}
+
         return {
             "response": response,
             "intent": intent_result.intent,
@@ -109,6 +161,7 @@ class InboundAgent:
                 "summary": qual_result.summary,
             },
             "handoff_summary": handoff,
+            "booking": booking_result,
         }
 
     def _generate_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None, waiting_before: str = "") -> str:
@@ -127,6 +180,18 @@ class InboundAgent:
                 ]
             )
         )
+
+        if self.use_openai and retrieved_context:
+            prompt = self.prompt_template.format(
+                knowledge=retrieved_context,
+                memory=self.memory.as_prompt_context(),
+                intent=intent,
+                recommendation=recommendation.option,
+                message=message,
+            )
+            openai_response = self._call_openai(prompt)
+            if openai_response:
+                return openai_response
 
         if self.use_ollama and retrieved_context:
             prompt = self.prompt_template.format(
@@ -169,6 +234,40 @@ class InboundAgent:
             return ""
         self.last_ollama_error = ""
         return stdout.strip()
+
+    def _call_openai(self, prompt: str) -> str:
+        try:
+            try:
+                import openai
+            except Exception as exc:
+                self.last_openai_error = f"import:{exc}"
+                return ""
+
+            api_key = os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                self.last_openai_error = "missing_api_key"
+                return ""
+            openai.api_key = api_key
+
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.2,
+            )
+            if not getattr(resp, "choices", None):
+                return ""
+            choice = resp.choices[0]
+            text = ""
+            if hasattr(choice, "message"):
+                text = choice.message.get("content", "")
+            else:
+                text = getattr(choice, "text", "")
+            self.last_openai_error = ""
+            return (text or "").strip()
+        except Exception as exc:
+            self.last_openai_error = str(exc)
+            return ""
 
     @staticmethod
     def _terminate_ollama_process(process: subprocess.Popen) -> None:
@@ -313,6 +412,46 @@ class InboundAgent:
     def _answer_faq(self, lowered: str) -> str:
         if "is this" in lowered or "breakout" in lowered:
             return "Yes, this is Breakout Escape Rooms. How may I help you today?"
+        if lowered.strip() in {"koramangala", "whitefield", "jp nagar", "jp"}:
+            if "koramangala" in lowered:
+                return "Koramangala has basement and street parking, and offers Murder Mystery, Hostage, Curse of the Pharaoh, Classified, Undercover, The Wizarding Championship, and The Forbidden Forest."
+            if "whitefield" in lowered:
+                return "Whitefield has basement car parking with dedicated spots and offers Murder Mystery, Hostage, Bomb Defusal, and Undercover."
+            if "jp nagar" in lowered or lowered.strip() == "jp":
+                return "JP Nagar has street parking and offers Murder Mystery, Hostage, and Prison Break."
+        # Direct booking intent (user wants to book)
+        if re.search(
+            r"\b(i want to book|want to book|can i book|book it|book now|book a|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book)\b",
+            lowered,
+        ):
+            return "Sure. I can help you book that. What location or date would you like?"
+        room_response = self._answer_room_name(lowered)
+        if room_response:
+            return room_response
+        # Budget/pricing questions
+        if (
+            "budget" in lowered
+            or "pricing" in lowered
+            or "price" in lowered
+            or "cost" in lowered
+            or re.search(r"\bhow much\b", lowered)
+        ):
+            return (
+                "Our pricing depends on event type and group size. I don't have exact budget details here, "
+                "but I can connect you with our sales team for a quote or provide an estimated price — "
+                "would you like a quote or an estimate?"
+            )
+        # New user / general inventory question
+        if "what do you have" in lowered or ("new to this" in lowered or "i'm new" in lowered or "im new" in lowered):
+            return (
+                "Breakout Escape Rooms offers live escape room experiences plus birthday, corporate, virtual, "
+                "and event packages across Koramangala, Whitefield, and JP Nagar. I can help you find the best room or package for your group."
+            )
+        if re.search(r"\boff(?:er|ering|r)\b", lowered):
+            return (
+                "Breakout Escape Rooms offers live escape room experiences plus birthday, corporate, virtual, "
+                "and event packages across Koramangala, Whitefield, and JP Nagar. I can help you find the best room or package for your group."
+            )
         if "what escape rooms" in lowered or "rooms are available" in lowered or "games are available" in lowered:
             if "whitefield" in lowered:
                 return "Sure. At Whitefield, you can choose from Murder Mystery, Hostage, Bomb Defusal, and Undercover. If you want something more intense, Bomb Defusal is the one I'd narrow in on."
@@ -353,6 +492,74 @@ class InboundAgent:
             return "Walk-ins are allowed only if slots are available. Slots cannot be held without advance payment."
         if "advance booking" in lowered or "booking required" in lowered:
             return "Yes. All bookings are done online."
+        return ""
+
+    def _answer_room_name(self, lowered: str) -> str:
+        import difflib
+        import re
+
+        rooms = {
+            "murder mystery": {
+                "description": "Murder Mystery is an investigation-style escape room with clues, puzzles, and a story-driven mystery.",
+                "locations": "Koramangala, Whitefield, and JP Nagar",
+            },
+            "hostage": {
+                "description": "Hostage is a rescue-style escape room with urgency, teamwork, and investigation elements.",
+                "locations": "Koramangala, Whitefield, and JP Nagar",
+            },
+            "curse of the pharaoh": {
+                "description": "Curse of the Pharaoh is an adventure-themed room with archaeology and mythology puzzles.",
+                "locations": "Koramangala",
+            },
+            "classified": {
+                "description": "Classified is a tense investigation room with cryptic puzzles and story-driven clues.",
+                "locations": "Koramangala",
+            },
+            "undercover": {
+                "description": "Undercover is a mystery room with action and plot twists, suitable for teams who enjoy immersive stories.",
+                "locations": "Koramangala and Whitefield",
+            },
+            "the wizarding championship": {
+                "description": "The Wizarding Championship is a magical escape room designed for younger players and families.",
+                "locations": "Koramangala",
+            },
+            "the forbidden forest": {
+                "description": "The Forbidden Forest is an adventure room with spooky elements and puzzle-solving in a forest-themed setting.",
+                "locations": "Koramangala",
+            },
+            "bomb defusal": {
+                "description": "Bomb Defusal is an intense, time-pressured room that challenges teams to work quickly and communicate clearly.",
+                "locations": "Whitefield",
+            },
+            "prison break": {
+                "description": "Prison Break is a mission-style room focused on escape tactics, teamwork, and dramatic storytelling.",
+                "locations": "JP Nagar",
+            },
+        }
+        for room_name, info in rooms.items():
+            if room_name in lowered:
+                location = self.memory.data.get("location", "")
+                if location:
+                    return (
+                        f"At {location}, {room_name.title()} is available and {info['description']} "
+                        f"It is offered at {info['locations']}."
+                    )
+                return f"{room_name.title()} is available and {info['description']} It is offered at {info['locations']}."
+
+        normalized = re.sub(r"[^a-z ]", "", lowered).strip()
+        if normalized:
+            match = difflib.get_close_matches(normalized, rooms.keys(), n=1, cutoff=0.72)
+            if match:
+                room_name = match[0]
+                info = rooms[room_name]
+                location = self.memory.data.get("location", "")
+                if location:
+                    return (
+                        f"At {location}, {room_name.title()} is available and {info['description']} "
+                        f"It is offered at {info['locations']}."
+                    )
+                return f"{room_name.title()} is available and {info['description']} It is offered at {info['locations']}."
+
         return ""
 
     def _ask_for_field(self, intent: str, field: str) -> str:
@@ -446,6 +653,13 @@ class InboundAgent:
         return ""
 
     def _adult_recommendation_response(self) -> str:
+        age_group = str(self.memory.data.get("age_group", "")).lower()
+        # If age_group is actually kids or teens, delegate to appropriate response
+        if age_group == "kids":
+            return self._kids_recommendation_response()
+        if "teen" in age_group:
+            return self._teens_recommendation_response()
+
         participants = self.memory.data.get("participants")
         location = str(self.memory.data.get("location", ""))
 
@@ -461,6 +675,28 @@ class InboundAgent:
             return f"{group_phrase}, I'd recommend Prison Break. It has a stronger mission-style setup, and Murder Mystery is a lighter alternative if you want more clue solving. Are you looking for something intense or more relaxed?"
 
         return f"{group_phrase}, I'd recommend Classified or Bomb Defusal. Classified is great if you enjoy investigation-style challenges and solving a mystery together. Bomb Defusal is better if you're looking for something more intense and fast-paced. Are you looking for something challenging or something more beginner-friendly?"
+
+    def _kids_recommendation_response(self) -> str:
+        """Recommendation for kids age group."""
+        participants = self.memory.data.get("participants")
+        location = str(self.memory.data.get("location", ""))
+
+        group_phrase = f"For a group of {participants} kids" if participants else "For kids"
+        if location:
+            group_phrase += f" visiting {location}"
+
+        return f"{group_phrase}, I'd recommend Murder Mystery or Hostage. They're both available at all locations and work well for younger players. Murder Mystery focuses on investigation and clue solving, while Hostage adds a bit more urgency with a rescue-style story. Which would you prefer?"
+
+    def _teens_recommendation_response(self) -> str:
+        """Recommendation for teens age group."""
+        participants = self.memory.data.get("participants")
+        location = str(self.memory.data.get("location", ""))
+
+        group_phrase = f"For a group of {participants} teens" if participants else "For teens"
+        if location:
+            group_phrase += f" visiting {location}"
+
+        return f"{group_phrase}, I'd recommend Murder Mystery or Hostage to start with. They work well for your age group and give a good mix of puzzle-solving and teamwork. If you want something more challenging, try Classified or Bomb Defusal. What interests you?"
 
     def _escape_room_context_prefix(self, age_phrase: str) -> str:
         participants = self.memory.data.get("participants")

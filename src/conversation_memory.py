@@ -18,6 +18,7 @@ DEFAULT_MEMORY = {
     "preferred_date": "",
     "food_required": "",
     "budget_range": "",
+    "room": "",
     "intent": "",
     "sentiment": "neutral",
     "recommended_option": "",
@@ -102,6 +103,10 @@ class ConversationMemory:
         location = self._extract_location(lowered)
         if location:
             self.data["location"] = location
+
+        room = self._extract_room(lowered)
+        if room:
+            self.data["room"] = room
 
         participants = self._extract_participants(lowered)
         if participants:
@@ -275,6 +280,25 @@ class ConversationMemory:
         return ""
 
     @staticmethod
+    def _extract_room(lowered: str) -> str:
+        rooms = [
+            "murder mystery",
+            "hostage",
+            "curse of the pharaoh",
+            "classified",
+            "undercover",
+            "the wizarding championship",
+            "the forbidden forest",
+            "bomb defusal",
+            "prison break",
+            "zodiac",
+        ]
+        for room in rooms:
+            if room in lowered:
+                return room.title()
+        return ""
+
+    @staticmethod
     def _extract_participants(lowered: str) -> int | str:
         if re.search(r"\b(these|those|both|either)\s+\d{1,2}\b", lowered):
             return ""
@@ -304,13 +328,26 @@ class ConversationMemory:
             match = re.search(pattern, lowered)
             if match:
                 return f"{match.group(1)} years"
-        if "kids" in lowered or "children" in lowered:
+        # Exact and fuzzy match for "kids" and "children"
+        if "children" in lowered:
             return "kids"
+        # Try to match "kid" or "kids" with typo tolerance
+        import difflib
+        words = re.findall(r"\b\w+\b", lowered)
+        for word in words:
+            if difflib.SequenceMatcher(None, word, "kids").ratio() > 0.75:
+                return "kids"
+        
         plus_match = re.search(r"\ball\s+(?:are|of us are)\s+(\d{1,2})\s*(?:plus|\+)\b", lowered)
         if plus_match and int(plus_match.group(1)) >= 18:
             return "adults"
-        if "adults" in lowered or "adult" in lowered:
-            return "adults"
+        # Try to match "adult" or "adults" with typo tolerance
+        for word in words:
+            if difflib.SequenceMatcher(None, word, "adult").ratio() > 0.80:
+                return "adults"
+            if difflib.SequenceMatcher(None, word, "adults").ratio() > 0.75:
+                return "adults"
+        
         if "teen" in lowered:
             return "teens"
         return ""

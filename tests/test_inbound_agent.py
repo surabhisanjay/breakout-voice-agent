@@ -42,6 +42,14 @@ def test_locations(tmp_path: Path) -> None:
     assert "JP Nagar" in result["response"]
 
 
+def test_location_name_followup_returns_details(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("Koramangala")
+    assert "Koramangala" in result["response"]
+    assert "Murder Mystery" in result["response"]
+    assert "Hostage" in result["response"]
+
+
 def test_parking_available(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("Is parking available?")
@@ -57,6 +65,21 @@ def test_game_availability_by_location(tmp_path: Path) -> None:
     assert "Hostage" in result["response"]
     assert "Bomb Defusal" in result["response"]
     assert "Undercover" in result["response"]
+
+
+def test_room_name_followup_with_location_returns_details(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("What locations do you have?")
+    result = agent.handle_message("Murder Mystery")
+    assert "Murder Mystery" in result["response"]
+    assert "Koramangala" in result["response"] or "Whitefield" in result["response"] or "JP Nagar" in result["response"]
+
+
+def test_room_name_typo_fallback(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("Murder mysteru")
+    assert "Murder Mystery" in result["response"]
+    assert "investigation-style" in result["response"]
 
 
 def test_kids_recommendation(tmp_path: Path) -> None:
@@ -371,6 +394,96 @@ def test_cancellation_faq(tmp_path: Path) -> None:
     result = agent.handle_message("What are your cancellation policies?")
     assert "Cancellation charges" in result["response"]
     assert "appropriate team" in result["response"]
+
+
+def test_booking_phrase_triggers_help_prompt(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("I want to book")
+    assert result["response"].lower().startswith("sure")
+
+def test_booking_phrase_with_variation(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("Can I book a slot?")
+    assert result["response"].lower().startswith("sure")
+
+
+def test_booking_it_triggers_help_prompt(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("Book it")
+    assert result["response"].lower().startswith("sure")
+
+
+def test_booking_after_location_and_room_starts_booking_flow(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want to book")
+    agent.handle_message("Koramangala")
+    agent.handle_message("Murder Mystery")
+    result = agent.handle_message("Book it")
+
+    assert result["intent"] == "escape_room_inquiry"
+    assert result["route"]["next_agent"] != "inbound_agent"
+    assert agent.memory.data["room"] == "Murder Mystery"
+    assert "how many" in result["response"].lower() or "what date" in result["response"].lower() or "what is the age group" in result["response"].lower()
+
+
+def test_typo_kidss_corrects_adult_recommendation(tmp_path: Path) -> None:
+    """Bug: 'kidss' typo should override 'adults' age group and recommend kid-friendly rooms."""
+    agent = make_agent(tmp_path)
+    # Establish escape_room_inquiry first
+    agent.handle_message("I want to book an escape room")
+    adult_result = agent.handle_message("We are 5 adults visiting Koramangala")
+    assert agent.memory.data["age_group"] == "adults"
+    assert agent.memory.data["participants"] == 5
+    # Should have adult recommendation or be asking for more info
+    assert "adults" in adult_result["response"].lower() or "age group" in adult_result["response"].lower()
+
+    kids_result = agent.handle_message("kidss")
+    assert agent.memory.data["age_group"] == "kids"
+    assert "Murder Mystery" in kids_result["response"]
+    assert "Hostage" in kids_result["response"]
+    # Should NOT recommend adult rooms (both should be absent)
+    assert "Classified" not in kids_result["response"] and "Undercover" not in kids_result["response"]
+
+
+def test_booking_question_triggers_help_prompt(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("How do I book?")
+    assert result["response"].lower().startswith("sure")
+
+
+def test_budget_question_triggers_sales_prompt(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("Explain the budget")
+    resp = result["response"].lower()
+    # When booking routing is enabled for budget queries, ensure we route to the booking agent
+    assert result["route"]["next_agent"] == "booking_agent"
+    assert result["route"]["should_handoff"] is True
+    assert "booking" in result["response"].lower() or "checking availability" in result["response"].lower()
+
+
+def test_new_user_query_offers(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("What do you have, I'm new to this")
+    resp = result["response"].lower()
+    assert "escape room" in resp or "offers" in resp
+
+
+def test_offering_question_is_answered(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("What do you offer?")
+    assert "offers live escape room experiences" in result["response"]
+    assert "Koramangala" in result["response"]
+    assert "Whitefield" in result["response"]
+    assert "JP Nagar" in result["response"]
+
+
+def test_offering_question_with_typo_is_answered(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("What do you offr?")
+    assert "offers live escape room experiences" in result["response"]
+    assert "Koramangala" in result["response"]
+    assert "Whitefield" in result["response"]
+    assert "JP Nagar" in result["response"]
 
 
 def test_food_options(tmp_path: Path) -> None:
