@@ -44,7 +44,7 @@ class IntentDetector:
         ("couple_event", ("couple", "date", "anniversary", "two of us", "2 of us")),
         ("corporate_event", ("corporate", "office", "team building", "employee", "company", "hr", "team outing")),
         ("virtual_event", ("virtual", "online", "remote", "distributed")),
-        ("escape_room_inquiry", ("escape room", "room", "game", "puzzle", "challenge", "adults", "kids", "players", "people", "visiting", "coming", "recommend", "suggest", "compare")),
+        ("escape_room_inquiry", ("escape room", "room", "game", "puzzle", "challenge", "adults", "kids", "players", "people", "visiting", "coming", "recommend", "suggest", "compare", "friends", "group")),
     ]
 
     FAQ_TERMS = (
@@ -68,7 +68,11 @@ class IntentDetector:
 
         for intent, keywords in self.PATTERNS:
             for keyword in keywords:
-                if keyword in text:
+                if len(keyword) <= 4:
+                    match = bool(re.search(r"\b" + re.escape(keyword) + r"\b", text))
+                else:
+                    match = keyword in text
+                if match:
                     if previous_intent and previous_intent not in ("general_faq", intent):
                         if not self._is_clear_topic_switch(text, intent):
                             return IntentResult(previous_intent, 0.62, "preserved active intent")

@@ -1,1 +1,1 @@
-"""Breakout Inbound Agent package."""
+"""Breakout Voice Agent — src package."""

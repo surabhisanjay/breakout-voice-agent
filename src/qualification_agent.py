@@ -18,7 +18,7 @@ class QualificationResult:
 
 class QualificationAgent:
     REQUIRED_BY_INTENT = {
-        "escape_room_inquiry": ["event_type", "participants", "location", "age_group"],
+        "escape_room_inquiry": ["event_type", "participants", "age_group", "location"],
         "birthday_party": [
             "event_type", "participants", "location", "preferred_date",
             "age_group", "food_required", "budget_range",
@@ -183,9 +183,11 @@ class QualificationAgent:
                 self.memory.data["food_required"] = food_required
                 self.memory.save()
 
-        elif expected == "budget_range" and self._is_valid_budget(normalized):
-            self.memory.data["budget_range"] = normalized.strip(" .").lower()
-            self.memory.save()
+        elif expected == "budget_range":
+            canonical = self._extract_budget_canonical(normalized)
+            if canonical:
+                self.memory.data["budget_range"] = canonical
+                self.memory.save()
 
         elif expected == "participants":
             self._capture_bare_count(normalized, intent)
@@ -219,7 +221,7 @@ class QualificationAgent:
 
         if expected == "preferred_date":
             if not self.memory._extract_preferred_date(normalized):
-                return "Sorry, I didn't understand the date. Could you provide a date like 18 June or June 18?"
+                return "Sorry, I didn't quite catch the date. Could you say something like 18 June or June 18?"
             return ""
 
         if expected == "participants":
@@ -335,12 +337,50 @@ class QualificationAgent:
 
     @staticmethod
     def _is_valid_budget(message: str) -> bool:
+        """
+        Returns True for any utterance that names a recognisable budget tier,
+        including natural voice phrasing:
+            "Premium" / "Standard" / "Basic"
+            "We would like to go to premium options"
+            "Premium package" / "premium plan" / "go with standard"
+            Numeric ranges: "50000" / "30,000 - 50,000"
+        """
         lowered = message.lower().strip(" .!?")
-        if lowered in {"standard", "premium", "basic", "regular"}:
+        # Any tier keyword is sufficient
+        if re.search(r"\b(premium|standard|basic|regular)\b", lowered):
             return True
         if re.search(r"\b(?:budget|range|under|below|within|around|about)\b", lowered):
             return True
         return bool(re.fullmatch(r"₹?\s*\d[\d,]*(?:\s*-\s*₹?\s*\d[\d,]*)?", lowered))
+
+    @staticmethod
+    def _extract_budget_canonical(message: str) -> str:
+        """
+        Extract a clean, canonical budget label from a natural-language utterance.
+
+        Examples:
+            "Premium"                            → "premium"
+            "we would like to go to premium"     → "premium"
+            "premium option"                     → "premium"
+            "go with standard plan"              → "standard"
+            "basic package"                      → "basic"
+            "₹30,000"                            → "₹30,000"
+        Returns '' if no recognisable budget is found.
+        """
+        lowered = message.lower()
+        if re.search(r"\bpremium\b", lowered):
+            return "premium"
+        if re.search(r"\bstandard\b", lowered):
+            return "standard"
+        if re.search(r"\bbasic\b", lowered):
+            return "basic"
+        if re.search(r"\bregular\b", lowered):
+            return "standard"  # treat 'regular' as synonym for 'standard'
+        # Numeric range fallback
+        match = re.search(r"₹?\s*\d[\d,]*(?:\s*-\s*₹?\s*\d[\d,]*)?", message)
+        if match:
+            return match.group(0).strip()
+        return ""
 
     def _is_valid_location(self, lowered: str) -> bool:
         # Exact canonical match

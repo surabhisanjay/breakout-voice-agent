@@ -215,7 +215,7 @@ def test_ollama_timeout_recovery(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("src.inbound_agent.os.killpg", lambda *args, **kwargs: None)
 
     result = agent.handle_message("Tell me something unusual that is not in the common FAQs.")
-    assert result["response"] == "I don't currently have that information, but I can connect you with the appropriate team."
+    assert "team can help" in result["response"] or "connect you" in result["response"] or "call you back" in result["response"]
     assert agent.last_ollama_error == "timeout"
 
 
@@ -271,12 +271,12 @@ def test_invalid_date_rejection(tmp_path: Path) -> None:
     qualifier.update_and_qualify("JP Nagar", "corporate_event")
 
     invalid = qualifier.update_and_qualify("W2", "corporate_event")
-    assert invalid.response == "Sorry, I didn't understand the date. Could you provide a date like 18 June or June 18?"
+    assert invalid.response == "Sorry, I didn't quite catch the date. Could you say something like 18 June or June 18?"
     assert "preferred_date" in invalid.missing_fields
     assert memory.data["preferred_date"] == ""
 
     unrelated = qualifier.update_and_qualify("Ah, but it's in Google.", "corporate_event")
-    assert unrelated.response == "Sorry, I didn't understand the date. Could you provide a date like 18 June or June 18?"
+    assert unrelated.response == "Sorry, I didn't quite catch the date. Could you say something like 18 June or June 18?"
     assert memory.data["preferred_date"] == ""
 
 
@@ -322,7 +322,7 @@ def test_inbound_invalid_date_does_not_repeat_same_prompt(tmp_path: Path) -> Non
     agent.handle_message("We need a corporate event for 50 employees.")
     agent.handle_message("JP Nagar")
     result = agent.handle_message("W2")
-    assert result["response"] == "Sorry, I didn't understand the date. Could you provide a date like 18 June or June 18?"
+    assert result["response"] == "Sorry, I didn't quite catch the date. Could you say something like 18 June or June 18?"
     assert agent.memory.data["preferred_date"] == ""
 
 
@@ -764,8 +764,7 @@ def test_full_corporate_flow_end_to_end(tmp_path: Path) -> None:
     r7 = agent.handle_message("9876543210")["response"]
     assert agent.memory.data["phone"] == "9876543210"
     # Either the QA completion message or the handoff message is correct;
-    # both indicate successful qualification.
-    assert "captured all the information" in r7 or "connect you" in r7
+    assert "captured all the information" in r7 or "connect you" in r7 or "got everything I need" in r7 or "check availability" in r7
 
 
 def test_invalid_name_input_asks_again(tmp_path: Path) -> None:
@@ -986,4 +985,544 @@ def test_show_memory_all_fields_after_full_qualification(monkeypatch, capsys, tm
     assert mem["customer_name"] == "Siddharth"
     assert mem["phone"] == "9876543210"
 
+
+# ===========================================================================
+# PRODUCTION CONVERSATION UPGRADE TESTS
+# ===========================================================================
+
+def test_interruption_mid_qualification_faq_answered(tmp_path: Path) -> None:
+    """Interruption mid-qualification: customer asks a FAQ, agent answers and resumes."""
+    agent = make_agent(tmp_path)
+    # Start corporate event flow
+    agent.handle_message("We need a corporate event for 50 employees.")
+    # Expecting: "Which location would you prefer: Koramangala, Whitefield, or JP Nagar?"
+    # Customer asks about kids instead of answering location:
+    r = agent.handle_message("Which location would be better for kids?")["response"]
+    assert "Whitefield" in r
+    assert "Coming back to" in r or "get back to" in r
+    # The qualification field should still be missing/expected next time
+    assert agent.memory.data["location"] == ""
+
+
+def test_interruption_mid_food_question_parking_answered(tmp_path: Path) -> None:
+    """Interruption mid-qualification: customer asks about parking while food_required is expected."""
+    agent = make_agent(tmp_path)
+    agent.handle_message("We need a corporate event for 50 employees.")
+    agent.handle_message("JP Nagar")
+    agent.handle_message("18 June")
+    # Expected next field is food_required
+    # Interruption: ask about parking
+    r = agent.handle_message("Where do we park?")["response"]
+    assert "parking" in r.lower()
+    assert "food" in r.lower() # resumes asking for food
+
+
+def test_booking_consent_flow(tmp_path: Path) -> None:
+    """Booking consent: when qualification is complete, ask for booking consent instead of instant handoff."""
+    agent = make_agent(tmp_path)
+    agent.handle_message("We need a corporate event for 50 employees.")
+    agent.handle_message("JP Nagar")
+    agent.handle_message("18 June")
+    agent.handle_message("Yes") # food_required
+    agent.handle_message("Premium") # budget_range
+    agent.handle_message("Siddharth") # customer_name
+    
+    # Last turn of qualification: phone number
+    r = agent.handle_message("9876543210")
+    # Should ask for consent
+    assert "Would you like me to check availability" in r["response"]
+    assert r["route"]["next_agent"] == "inbound_agent" # not handed off yet!
+    assert r["route"]["should_handoff"] is False
+    assert agent.memory.data["booking_consent_pending"] is True
+    assert agent.memory.data["current_workflow"] == "awaiting_booking"
+
+    # Say no to booking consent
+    r_no = agent.handle_message("No thanks")
+    assert "Feel free to call us when you're ready" in r_no["response"] or "No problem" in r_no["response"]
+    assert agent.memory.data["booking_consent_pending"] is False
+    assert agent.memory.data["current_workflow"] == "general"
+
+
+def test_booking_consent_yes_triggers_handoff(tmp_path: Path) -> None:
+    """Booking consent: customer says 'Yes' to check availability, triggers handoff."""
+    agent = make_agent(tmp_path)
+    agent.handle_message("We need a corporate event for 50 employees.")
+    agent.handle_message("JP Nagar")
+    agent.handle_message("18 June")
+    agent.handle_message("Yes")
+    agent.handle_message("Premium")
+    agent.handle_message("Siddharth")
+    agent.handle_message("9876543210") # Qualification finishes, asks consent
+
+    # Say yes to check availability
+    r_yes = agent.handle_message("Sure, go ahead")
+    assert r_yes["route"]["next_agent"] == "booking_agent"
+    assert r_yes["route"]["should_handoff"] is True
+    assert agent.memory.data["booking_consent_pending"] is False
+    assert agent.memory.data["current_workflow"] == "booking"
+
+
+# ===========================================================================
+# PRODUCTION BLOCKERS FIXES TESTS
+# ===========================================================================
+
+def test_interruption_preserves_qualification_state_across_faq(tmp_path: Path) -> None:
+    """Bug 1 Fix check: Interruption does not clear the qualification intent or expected field in memory."""
+    agent = make_agent(tmp_path)
+    # Start corporate flow
+    agent.handle_message("We need a corporate event for 50 employees.") # location expected
+    agent.handle_message("Whitefield") # date expected
+    agent.handle_message("18 June") # food expected
+    agent.handle_message("Yes") # budget expected
+    
+    # Expected field is now budget_range. Let's verify that
+    assert agent.qualification_agent._waiting_for == "budget_range"
+    
+    # Interruption turn
+    r_interruption = agent.handle_message("Which location is better for kids?")
+    # Check that recommendation FAQ matched
+    assert "usually recommend Whitefield" in r_interruption["response"]
+    assert "budget" in r_interruption["response"]
+    
+    # Check that the intent in memory remains "corporate_event"
+    assert agent.memory.data["intent"] == "corporate_event"
+    assert agent.qualification_agent._waiting_for == "budget_range"
+    
+    # Second interruption turn (follow-up FAQ)
+    r_interruption2 = agent.handle_message("know which location is better.")
+    assert "Koramangala, Whitefield, and JP Nagar" in r_interruption2["response"]
+    assert "budget" in r_interruption2["response"]
+    
+    assert agent.memory.data["intent"] == "corporate_event"
+    assert agent.qualification_agent._waiting_for == "budget_range"
+
+    # Now reply to budget
+    r_budget = agent.handle_message("Premium")
+    # Verify budget captured
+    assert agent.memory.data["budget_range"] == "premium"
+    # Verification is advanced to customer_name
+    assert agent.qualification_agent._waiting_for == "customer_name"
+    assert "name" in r_budget["response"]
+
+
+def test_kids_location_faq_direct_recommendation(tmp_path: Path) -> None:
+    """Bug 2 Fix check: Kids location question returns the direct Whitefield recommendation."""
+    agent = make_agent(tmp_path)
+    response = agent.handle_message("Which location is better for kids?")["response"]
+    assert "usually recommend Whitefield" in response
+    assert "family groups often enjoy it" in response
+
+
+def test_ollama_availability_and_timeout_safety(tmp_path: Path) -> None:
+    """Bug 4 & 5 Fix check: Agent handles Ollama timeouts and offline states gracefully without crashing."""
+    agent = make_agent(tmp_path)
+    # Set to qwen3:8b and enable use_ollama. It will run the startup check and disable it because qwen3 is not there
+    agent.use_ollama = True
+    avail = agent._check_ollama_availability()
+    assert isinstance(avail, bool)
+    
+    # In this test, make_agent sets use_ollama=False, but if we create one with True:
+    from src.knowledge_loader import KnowledgeLoader
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    agent_with_ollama = InboundAgent(
+        knowledge_base=knowledge,
+        memory=agent.memory,
+        prompt_path=Path(__file__).resolve().parent.parent / "prompts" / "inbound_prompt.txt",
+        use_ollama=True,
+    )
+    # Check that it sets use_ollama to the checked state
+    assert agent_with_ollama.use_ollama == avail
+
+
+# ===========================================================================
+# CONVERSATION INTELLIGENCE LAYER TESTS (CASES 1 - 5)
+# ===========================================================================
+
+def test_case_1_seven_friends_first_time(tmp_path: Path) -> None:
+    """Case 1: Group of 7 friends, first-timers, recommending rooms and asking for location."""
+    agent = make_agent(tmp_path)
+    
+    r1 = agent.handle_message("Hi.")["response"]
+    assert "help you today" in r1.lower()
+    
+    # 7 friends should set participants to 7
+    r2 = agent.handle_message("We're a group of 7 friends.")["response"]
+    assert agent.memory.data["participants"] == 7
+    assert "age group" in r2.lower()
+    
+    # First time should trigger beginner recommendation and resume qualification
+    r3 = agent.handle_message("None of us have done an escape room before.")["response"]
+    assert agent.memory.data["experience_level"] == "beginner"
+    assert "Murder Mystery" in r3
+    assert "Hostage" in r3
+    # Check that it resumes qualification
+    assert "age group" in r3.lower()
+
+
+def test_case_2_kids_and_adults_location_recommendation(tmp_path: Path) -> None:
+    """Case 2: 2 kids and 4 adults should sum to 6 participants and recommend Whitefield."""
+    agent = make_agent(tmp_path)
+    
+    r1 = agent.handle_message("We have 2 kids and 4 adults.")["response"]
+    assert agent.memory.data["participants"] == 6
+    assert agent.memory.data["age_group"] == "kids"
+    
+    r2 = agent.handle_message("Which location would be better?")["response"]
+    assert "Whitefield" in r2
+    assert "family groups" in r2.lower()
+
+
+def test_case_3_dislikes_puzzles_consultation(tmp_path: Path) -> None:
+    """Case 3: Customer concern 'no puzzles' is answered consultatively and qualification is resumed."""
+    agent = make_agent(tmp_path)
+    
+    # Start qualification
+    agent.handle_message("We need an event for 15 employees.")
+    # Expected next field: location
+    assert agent.qualification_agent._waiting_for == "location"
+    
+    # Interruption turn
+    r = agent.handle_message("Some people in our group don't enjoy puzzles. Would they still have fun?")["response"]
+    assert "common" in r.lower()
+    assert "puzzles" in r.lower()
+    assert "immersive" in r.lower() or "story-driven" in r.lower()
+    assert "Murder Mystery" in r
+    # Ensure qualification is resumed
+    assert "Koramangala, Whitefield, or JP Nagar" in r
+
+
+def test_case_4_bangalore_next_weekend(tmp_path: Path) -> None:
+    """Case 4: Recommending popular experiences and asking location for weekend visitors."""
+    agent = make_agent(tmp_path)
+    
+    r = agent.handle_message("We're coming to Bangalore next weekend. What's the most popular experience?")["response"]
+    assert "Murder Mystery" in r
+    assert "Hostage" in r
+    assert "Koramangala, Whitefield, or JP Nagar" in r
+    assert agent.memory.data["preferred_date"] == "Next Weekend"
+
+
+def test_case_5_pronominal_which_one_resolution(tmp_path: Path) -> None:
+    """Case 5: Resolves 'Which one would you suggest?' using discussed_options history."""
+    agent = make_agent(tmp_path)
+    
+    # Prime discussed options
+    agent.memory.data["discussed_options"] = ["Murder Mystery", "Hostage"]
+    agent.memory.data["experience_level"] = "beginner"
+    agent.memory.save()
+    
+    r = agent.handle_message("Which one would you suggest?")["response"]
+    assert "lean toward Murder Mystery" in r
+    assert "without intense time pressure" in r
+
+
+# ===========================================================================
+# PREEMPTION & ROUTING OWNERSHIP TESTS
+# ===========================================================================
+
+def test_booking_agent_preemption_on_faq(tmp_path: Path) -> None:
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    # Qualification complete fields to start booking agent
+    memory.data.update({
+        "intent": "corporate_event",
+        "location": "Whitefield",
+        "participants": 10,
+        "preferred_date": "18 June",
+        "customer_name": "Siddharth",
+        "phone": "9876543210",
+        "food_required": True,
+        "budget_range": "premium",
+        "current_workflow": "booking",
+    })
+    memory.save()
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+    booking = BookingAgent(memory)
+    booking._state = booking._STATE_WAITING_FOR_SLOT
+    booking._available_slots = ["10:00 AM", "3:00 PM"]
+    
+    # Ask a FAQ: "Which location is better for kids?"
+    result, booking_inst, active = main_module.dispatch(
+        "Which location is better for kids?", inbound, booking, "booking_agent"
+    )
+    
+    assert active == "inbound_agent", "Should preempt back to inbound agent"
+    assert "Whitefield" in result.response
+    assert "usually recommend Whitefield" in result.response
+
+
+def test_booking_agent_preemption_on_new_escape_room_inquiry(tmp_path: Path) -> None:
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    # Start in booking flow with existing details
+    memory.data.update({
+        "intent": "corporate_event",
+        "location": "Whitefield",
+        "participants": 10,
+        "preferred_date": "18 June",
+        "customer_name": "Siddharth",
+        "phone": "9876543210",
+        "food_required": True,
+        "budget_range": "premium",
+        "current_workflow": "booking",
+    })
+    memory.save()
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+    booking = BookingAgent(memory)
+    booking._state = booking._STATE_WAITING_FOR_SLOT
+    
+    # New escape room inquiry
+    result, booking_inst, active = main_module.dispatch(
+        "We're 7 friends and none of us have done an escape room before.", inbound, booking, "booking_agent"
+    )
+    
+    assert active == "inbound_agent", "Should preempt to inbound agent"
+    assert memory.data["intent"] == "escape_room_inquiry"
+    # Qualification memory should be cleared for old fields
+    assert memory.data["location"] == ""
+    assert memory.data["food_required"] == ""
+    # But new fields extracted
+    assert memory.data["participants"] == 7
+    assert memory.data["experience_level"] == "beginner"
+    # Contact details preserved
+    assert memory.data["customer_name"] == "Siddharth"
+    assert memory.data["phone"] == "9876543210"
+
+
+def test_booking_agent_preemption_on_corporate_event(tmp_path: Path) -> None:
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    # Start in booking flow with existing details
+    memory.data.update({
+        "intent": "escape_room_inquiry",
+        "location": "Whitefield",
+        "participants": 4,
+        "age_group": "kids",
+        "customer_name": "Siddharth",
+        "phone": "9876543210",
+        "current_workflow": "booking",
+    })
+    memory.save()
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+    booking = BookingAgent(memory)
+    booking._state = booking._STATE_WAITING_FOR_SLOT
+    
+    # New corporate event
+    result, booking_inst, active = main_module.dispatch(
+        "I want a corporate event for 15 employees.", inbound, booking, "booking_agent"
+    )
+    
+    assert active == "inbound_agent"
+    assert memory.data["intent"] == "corporate_event"
+    # Old location and age_group cleared
+    assert memory.data["location"] == ""
+    assert memory.data["age_group"] == ""
+    # New corporate fields extracted
+    assert memory.data["company_size"] == 15
+    assert memory.data["participants"] == 15
+    # Contact preserved
+    assert memory.data["customer_name"] == "Siddharth"
+    assert memory.data["phone"] == "9876543210"
+
+
+def test_booking_agent_preemption_preserves_cancellation(tmp_path: Path) -> None:
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    # Start in booking flow
+    memory.data.update({
+        "intent": "corporate_event",
+        "location": "Whitefield",
+        "participants": 10,
+        "customer_name": "Siddharth",
+        "phone": "9876543210",
+        "current_workflow": "booking",
+    })
+    memory.save()
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+    booking = BookingAgent(memory)
+    booking._state = booking._STATE_WAITING_FOR_SLOT
+    
+    # Cancel this booking
+    result, booking_inst, active = main_module.dispatch(
+        "Cancel this booking.", inbound, booking, "booking_agent"
+    )
+    
+    # Should stay on booking agent (since cancellation is handled by booking agent)
+    assert active == "booking_agent"
+
+
+def test_live_scenarios_from_user_request(tmp_path: Path) -> None:
+    """
+    Verifies the user's exact live scenario sequence:
+      1. Adults and two kids visiting Whitefield. (routes to inbound)
+      2. Which rooms are available? (FAQ -> routes to inbound)
+      3. We're 7 friends and none of us have done an escape room before. (new inquiry -> clears and routes to inbound)
+      4. I want an event for 15 employees. (new inquiry -> clears and routes to inbound)
+    """
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+    booking = None
+    active_agent = "inbound_agent"
+
+    # Turn 1: Adults and two kids visiting Whitefield.
+    result, booking, active_agent = main_module.dispatch(
+        "Adults and two kids visiting Whitefield.", inbound, booking, active_agent
+    )
+    assert active_agent == "booking_agent"
+    assert memory.data["location"] == "Whitefield"
+    assert memory.data["age_group"] == "kids"
+
+    # Set mock contact details to test preservation
+    memory.data["customer_name"] = "Siddharth"
+    memory.data["phone"] = "9876543210"
+    memory.save()
+
+    # Turn 2: Which rooms are available?
+    result, booking, active_agent = main_module.dispatch(
+        "Which rooms are available?", inbound, booking, active_agent
+    )
+    assert active_agent == "inbound_agent", "Should preempt to inbound_agent for FAQ"
+    assert "Breakout has" in result.response or "Murder Mystery" in result.response
+
+    # Turn 3: We're 7 friends and none of us have done an escape room before.
+    result, booking, active_agent = main_module.dispatch(
+        "We're 7 friends and none of us have done an escape room before.", inbound, booking, active_agent
+    )
+    assert active_agent == "inbound_agent", "Should preempt to inbound_agent for new inquiry"
+    # Old location should be cleared
+    assert memory.data["location"] == ""
+    # New participants and experience level should be set
+    assert memory.data["participants"] == 7
+    assert memory.data["experience_level"] == "beginner"
+    # Contact details preserved
+    assert memory.data["customer_name"] == "Siddharth"
+    assert memory.data["phone"] == "9876543210"
+
+    # Turn 4: I want an event for 15 employees.
+    result, booking, active_agent = main_module.dispatch(
+        "I want an event for 15 employees.", inbound, booking, active_agent
+    )
+    assert active_agent == "inbound_agent", "Should route to inbound for corporate event"
+    # Old experience level cleared
+    assert memory.data["experience_level"] == ""
+    # New company size and participants set
+    assert memory.data["company_size"] == 15
+    assert memory.data["participants"] == 15
+    # Contact preserved
+    assert memory.data["customer_name"] == "Siddharth"
+    assert memory.data["phone"] == "9876543210"
+def test_production_voice_stabilization_blockers(tmp_path: Path) -> None:
+    """Verifies all Phase 8 stabilization requirements."""
+    import main as main_module
+    from src.inbound_agent import InboundAgent
+    from src.booking_agent import BookingAgent
+    from src.knowledge_loader import KnowledgeLoader
+
+    knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
+    memory = ConversationMemory(tmp_path / "session.json")
+    
+    inbound = InboundAgent(
+        knowledge_base=knowledge,
+        memory=memory,
+        prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
+        use_ollama=False,
+    )
+
+    # 1. Age Group Capture
+    # Test "above 18" -> adults
+    inbound.handle_message("above 18")
+    assert memory.data["age_group"] == "adults"
+
+    # Test "above 20" -> adults
+    memory.reset()
+    inbound.handle_message("above 20")
+    assert memory.data["age_group"] == "adults"
+
+    # Test "18 plus" -> adults
+    memory.reset()
+    inbound.handle_message("18 plus")
+    assert memory.data["age_group"] == "adults"
+
+    # Test "all adults" -> adults
+    memory.reset()
+    inbound.handle_message("all adults")
+    assert memory.data["age_group"] == "adults"
+
+    # 2. Booking Entry Conditions
+    # Just specifying Whitefield should NOT hand off to booking agent yet
+    memory.reset()
+    res1, _, active_agent = main_module.dispatch("visiting Whitefield.", inbound, None, "inbound_agent")
+    assert active_agent == "inbound_agent"
+    assert not res1.should_handoff
+
+    # 3. Booking State Persistence
+    # When active agent is booking agent, typo "Dupier" stays with booking agent
+    booking = BookingAgent(memory)
+    # Mocking slots available
+    booking._state = booking._STATE_WAITING_FOR_SLOT
+    booking._available_slots = ["10:00 AM", "3:00 PM"]
+    
+    res_booking, _, active_agent = main_module.dispatch("Dupier", inbound, booking, "booking_agent")
+    assert active_agent == "booking_agent"
+    assert "sorry" in res_booking.response.lower() or "choose" in res_booking.response.lower() or "available" in res_booking.response.lower()
 

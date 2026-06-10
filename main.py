@@ -5,12 +5,15 @@ import json
 import time
 from pathlib import Path
 
+from src.agent_response import AgentResponse
+from src.booking_agent import BookingAgent
 from src.conversation_memory import ConversationMemory
 from src.inbound_agent import InboundAgent
 from src.knowledge_loader import KnowledgeLoader
 from src.transcript_logger import TranscriptLogger
 from src.voice_input import VoiceInput
 from src.voice_output import VoiceOutput
+from src.conversation_manager import ConversationManager
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,12 +38,8 @@ def speak_then_resume_listening(voice_out: VoiceOutput, text: str, debug: bool =
     time.sleep(POST_TTS_COOLDOWN_SECONDS)
 
 
-def build_agent(args: argparse.Namespace) -> InboundAgent:
+def build_inbound_agent(args: argparse.Namespace, memory: ConversationMemory) -> InboundAgent:
     knowledge = KnowledgeLoader(BASE_DIR / "knowledge").load()
-    memory = ConversationMemory(BASE_DIR / "memory" / "session.json")
-    if args.reset_memory:
-        memory.reset()
-
     return InboundAgent(
         knowledge_base=knowledge,
         memory=memory,
@@ -50,22 +49,126 @@ def build_agent(args: argparse.Namespace) -> InboundAgent:
     )
 
 
-def print_result(result: dict, show_debug: bool) -> None:
-    print(f"\nAgent: {result['response']}")
+def build_agent(args: argparse.Namespace) -> InboundAgent:
+    """
+    Compatibility shim used by tests that monkeypatch `main_module.build_agent`.
+    Also used by run_text_loop / run_voice_loop so the monkeypatch intercepts
+    correctly in test mode.
+    """
+    memory = ConversationMemory(BASE_DIR / "memory" / "session.json")
+    return build_inbound_agent(args, memory)
+
+
+def print_result(result: AgentResponse, show_debug: bool) -> None:
+    print(f"\nAgent: {result.response}")
     if show_debug:
         print("\n--- Debug ---")
-        print(f"Intent: {result['intent']} ({result['intent_confidence']:.2f})")
-        print(f"Recommendation: {result['recommendation']['option']}")
-        print(f"Missing fields: {', '.join(result['missing_fields']) or 'none'}")
-        print(f"Route: {result['route']['next_agent']} | handoff={result['route']['should_handoff']}")
-        print("Handoff summary:")
-        print(result["handoff_summary"])
+        print(f"Intent: {result.intent} ({result.intent_confidence:.2f})")
+        print(f"Recommendation: {result.recommendation.get('option', '')}")
+        print(f"Missing fields: {', '.join(result.missing_fields) or 'none'}")
+        print(f"Route: {result.next_agent} | handoff={result.should_handoff}")
+        if result.booking_result:
+            print(f"Booking: {json.dumps(result.booking_result, indent=2)}")
+        else:
+            print(f"Handoff summary: {result.handoff_summary}")
 
+
+# ------------------------------------------------------------------ #
+# Single dispatcher — routes turns to the right agent each loop      #
+# ------------------------------------------------------------------ #
+
+def dispatch(
+    message: str,
+    inbound: InboundAgent,
+    booking: BookingAgent | None,
+    active_agent: str,
+) -> tuple[AgentResponse, BookingAgent | None, str]:
+    """
+    Route a message to the correct agent and return:
+        (response, booking_agent_instance, active_agent_name)
+
+    The booking_agent instance is created lazily on first handoff.
+    Once created it persists for the session (owns the conversation).
+    """
+    manager = ConversationManager(inbound.memory)
+    target_agent, category = manager.determine_routing(message, active_agent)
+
+    # 1. Handle preemption from booking_agent to inbound_agent (e.g., FAQ, recommendation, new inquiry)
+    if active_agent == "booking_agent" and target_agent == "inbound_agent":
+        active_agent = "inbound_agent"
+        inbound.memory.data["current_workflow"] = "general"
+        inbound.memory.data["booking_consent_pending"] = False
+        inbound.qualification_agent._waiting_for = ""
+        if booking is not None:
+            # Reset booking agent internal state so it restarts fresh next time
+            booking._state = booking._STATE_CHECKING_AVAILABILITY
+            booking._available_slots = []
+            booking._last_availability = {}
+            booking._booking_result = None
+        inbound.memory.save()
+
+    # 2. Handle new inquiry topic switch (reset qualification memory)
+    if category in {"new_corporate", "new_birthday", "new_escape_room", "new_booking"}:
+        fields_to_clear = [
+            "location", "participants", "age_group", "experience_level",
+            "company_size", "event_type", "preferred_date", "food_required",
+            "budget_range", "intent", "recommended_option"
+        ]
+        for field in fields_to_clear:
+            inbound.memory.data[field] = ""
+        inbound.memory.data["discussed_options"] = []
+        inbound.memory.data["customer_preferences"] = []
+        inbound.memory.data["concerns"] = []
+        inbound.memory.data["current_workflow"] = "general"
+        inbound.memory.data["booking_consent_pending"] = False
+        inbound.qualification_agent._waiting_for = ""
+        inbound.memory.save()
+
+        # Ensure we route to inbound_agent for the new qualification
+        active_agent = "inbound_agent"
+        if booking is not None:
+            booking._state = booking._STATE_CHECKING_AVAILABILITY
+            booking._available_slots = []
+            booking._last_availability = {}
+            booking._booking_result = None
+
+    if active_agent == "booking_agent" and booking is not None:
+        result = booking.handle_message(message)
+        return result, booking, "booking_agent"
+
+    # InboundAgent handles this turn
+    result = inbound.handle_message(message)
+
+    # Handoff decision — any qualified intent routes to BookingAgent.
+    # The Router may name the target "corporate_events_agent", "birthday_booking_agent" etc.
+    # (those are future specialist agents). For now, BookingAgent is the universal
+    # post-qualification stage that checks availability and confirms the booking.
+    if result.should_handoff:
+        if booking is None:
+            booking = BookingAgent(inbound.memory)
+        # First BookingAgent turn: run availability check immediately.
+        # The sentinel "ready" is ignored by BookingAgent — it reads location/date from memory.
+        booking_result = booking.handle_message("ready")
+        return booking_result, booking, "booking_agent"
+
+    return result, booking, "inbound_agent"
+
+
+
+# ------------------------------------------------------------------ #
+# Text loop                                                           #
+# ------------------------------------------------------------------ #
 
 def run_text_loop(args: argparse.Namespace) -> None:
-    agent = build_agent(args)
+    inbound = build_agent(args)          # patchable by tests
+    memory = inbound.memory
+    if getattr(args, "reset_memory", False):
+        memory.reset()
     voice = VoiceOutput(enabled=args.speak)
     logger = TranscriptLogger(BASE_DIR / "logs" / "conversations")
+
+    booking_agent: BookingAgent | None = None
+    active_agent = "inbound_agent"
 
     print("Breakout Inbound Agent is running locally.")
     print("Type a customer message. Commands: /handoff, /show_memory, /reset, /quit")
@@ -83,25 +186,36 @@ def run_text_loop(args: argparse.Namespace) -> None:
             print("Goodbye.")
             break
         if message == "/reset":
-            agent.memory.reset()
+            memory.reset()
+            booking_agent = None
+            active_agent = "inbound_agent"
             print("Session memory reset.")
             continue
         if message == "/handoff":
-            print(agent.handoff_generator.to_json(agent.memory.data))
+            print(inbound.handoff_generator.to_json(memory.data))
             continue
         if message == "/show_memory":
-            print(json.dumps(agent.memory.data, indent=2, ensure_ascii=False))
+            print(json.dumps(memory.data, indent=2, ensure_ascii=False))
             continue
 
-        result = agent.handle_message(message)
-        logger.log_turn(message, result, agent.memory.data)
+        logger.start_turn()
+        result, booking_agent, active_agent = dispatch(
+            message, inbound, booking_agent, active_agent
+        )
+        logger.log_turn(message, result.__dict__, memory.data, active_agent=active_agent)
         print_result(result, args.debug)
-        voice.speak(result["response"])
+        voice.speak(result.response)
 
+
+# ------------------------------------------------------------------ #
+# Voice loop                                                          #
+# ------------------------------------------------------------------ #
 
 def run_voice_loop(args: argparse.Namespace) -> None:
-    agent = build_agent(args)
-    agent.memory.reset()
+    inbound = build_agent(args)          # patchable by tests
+    memory = inbound.memory
+    memory.reset()
+
     print("Loading Whisper voice model...")
     voice_in = VoiceInput(model_name=args.whisper_model, language="en", debug=args.debug)
     # Warm up / pre-load Whisper model to avoid lag on first turn
@@ -111,22 +225,29 @@ def run_voice_loop(args: argparse.Namespace) -> None:
         print("Whisper voice model loaded.")
     except Exception as e:
         print(f"Warning: could not pre-load Whisper: {e}")
+
     voice_out = VoiceOutput(enabled=True, debug=args.debug)
     logger = TranscriptLogger(BASE_DIR / "logs" / "conversations")
+
+    booking_agent: BookingAgent | None = None
+    active_agent = "inbound_agent"
 
     print("Voice mode is running. Press Ctrl+C to stop.")
     print("Speak after the recording prompt. Say 'quit' or 'goodbye' to stop.")
     greeting = "Hello, thank you for calling Breakout Escape Rooms. How may I help you today?"
     print(f"\nAgent: {greeting}")
     speak_then_resume_listening(voice_out, greeting, debug=args.debug)
+
     while True:
         try:
             message = voice_in.record_and_transcribe(seconds=args.record_seconds)
         except KeyboardInterrupt:
             print("\nGoodbye.")
             break
+
         if args.debug and message:
             print(f"WHISPER TRANSCRIPT: {message}")
+
         if not should_process_transcript(message):
             if voice_in.last_status == "unclear":
                 print("\nAgent: Sorry, I didn't catch that. Could you repeat it?")
@@ -136,20 +257,31 @@ def run_voice_loop(args: argparse.Namespace) -> None:
                     debug=args.debug,
                 )
             continue
+
         print(f"\nCustomer: {message}")
+
         if message == "/show_memory":
-            print(json.dumps(agent.memory.data, indent=2, ensure_ascii=False))
+            print(json.dumps(memory.data, indent=2, ensure_ascii=False))
             continue
+
         if is_exit_command(message):
             farewell = "Thank you for contacting Breakout. Have a great day."
             print(farewell)
             speak_then_resume_listening(voice_out, farewell, debug=args.debug)
             break
-        result = agent.handle_message(message)
-        logger.log_turn(message, result, agent.memory.data)
-        print_result(result, args.debug)
-        speak_then_resume_listening(voice_out, result["response"], debug=args.debug)
 
+        logger.start_turn()
+        result, booking_agent, active_agent = dispatch(
+            message, inbound, booking_agent, active_agent
+        )
+        logger.log_turn(message, result.__dict__, memory.data, active_agent=active_agent)
+        print_result(result, args.debug)
+        speak_then_resume_listening(voice_out, result.response, debug=args.debug)
+
+
+# ------------------------------------------------------------------ #
+# CLI                                                                 #
+# ------------------------------------------------------------------ #
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local Breakout Escape Rooms Inbound Agent")

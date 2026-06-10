@@ -14,7 +14,7 @@ class RecommendationEngine:
     def can_recommend(self, memory: dict) -> bool:
         intent = memory.get("intent", "")
         if intent == "escape_room_inquiry":
-            return bool(memory.get("age_group") and memory.get("participants"))
+            return True
         if intent == "birthday_party":
             return bool(memory.get("location") and memory.get("participants") and memory.get("preferred_date"))
         if intent == "corporate_event":
@@ -29,49 +29,88 @@ class RecommendationEngine:
         if not self.can_recommend(memory):
             return Recommendation("", "")
 
+        intent = memory.get("intent", "")
+        participants = memory.get("participants", "")
+        age_group = memory.get("age_group", "")
+        experience_level = memory.get("experience_level", "")
+        location = memory.get("location", "")
+        event_type = memory.get("event_type", "")
+        preferences = memory.get("customer_preferences", [])
+        concerns = memory.get("concerns", [])
+
         text = " ".join(
             [
                 message.lower(),
-                str(memory.get("event_type", "")).lower(),
-                str(memory.get("participants", "")).lower(),
-                str(memory.get("age_group", "")).lower(),
-                str(memory.get("experience_level", "")).lower(),
-                str(memory.get("intent", "")).lower(),
+                str(event_type).lower(),
+                str(participants).lower(),
+                str(age_group).lower(),
+                str(experience_level).lower(),
+                str(intent).lower(),
             ]
         )
 
-        age = self._extract_age(text)
-        intent = memory.get("intent", "")
+        # 1. Puzzle dislike concern
+        if "no_puzzles" in concerns or "no puzzles" in text or "puzzle" in text:
+            return Recommendation(
+                "Murder Mystery",
+                "Murder Mystery focuses on finding physical clues and investigating a story rather than purely abstract logic, making it great for players who don't like standard puzzles."
+            )
 
-        if "beginner" in text or "first time" in text or "first-time" in text or "never done" in text:
+        # 2. Kids-centric (family groups / children)
+        age = self._extract_age(text)
+        if (age is not None and 5 <= age <= 8) or age_group == "kids" or "kids" in text:
+            if age is not None and 5 <= age <= 8:
+                return Recommendation(
+                    "The Wizarding Championship",
+                    "It is designed specifically for children aged 5 to 8 and is highly interactive."
+                )
+            if age is not None and 9 <= age <= 13:
+                return Recommendation(
+                    "Murder Mystery and Hostage",
+                    "They are suitable options for children aged 9 and above."
+                )
+            # Family group (kids + adults) or older kids
             return Recommendation(
                 "Murder Mystery or Hostage",
-                "Murder Mystery is easier to start with, while Hostage adds a bit more urgency.",
+                "These rooms are extremely family-friendly and work well for a mix of kids and adults."
             )
 
-        if age is not None and 5 <= age <= 8:
+        # 3. Beginner / first time
+        if "beginner" in text or "first time" in text or "first-time" in text or "never done" in text or experience_level == "beginner":
             return Recommendation(
-                "The Wizarding Championship",
-                "It is listed for children aged 5 to 8 and supports up to 8 players.",
+                "Murder Mystery or Hostage",
+                "Murder Mystery is easier to start with as a classic detective investigation, while Hostage adds a bit of urgency."
             )
 
-        if age is not None and 9 <= age <= 13:
+        # 4. Large group size / Corporate
+        if (participants and isinstance(participants, int) and participants > 8) or intent == "corporate_event":
             return Recommendation(
-                "Murder Mystery and Hostage",
-                "They are suitable options for children aged 9 and above.",
+                "Escape Rooms and Scavenger Hunt",
+                "A combination of multiple rooms like Undercover and Bomb Defusal, alongside a Scavenger Hunt, works best for larger teams to keep everyone engaged."
             )
 
-        if "challenging" in text or "challenge" in text or "hard" in text or "hardest" in text or "adults" in text or "adult" in text:
+        # 5. Challenging / Adults / Experienced
+        if "challenging" in text or "hard" in text or "adults" in text or "experienced" in text or "challenging" in preferences:
+            if location.lower() == "whitefield" or str(location).lower() == "whitefield":
+                return Recommendation(
+                    "Classified, Undercover, or Bomb Defusal",
+                    "These are highly immersive, higher-difficulty rooms perfect for adults or experienced players looking for a challenge."
+                )
+            if location.lower() == "jp nagar" or str(location).lower() == "jp nagar":
+                return Recommendation(
+                    "Prison Break",
+                    "Prison Break is our hardest and most mission-oriented room in JP Nagar."
+                )
             return Recommendation(
                 "Classified, Undercover, Prison Break, or Bomb Defusal",
-                "These are suitable choices for adults looking for a more challenging experience.",
+                "These are suitable choices for adults looking for a more challenging experience."
             )
 
         if intent == "birthday_party":
-            location = str(memory.get("location", ""))
+            location_str = str(memory.get("location", ""))
             capacity_note = (
                 " Whitefield can accommodate approximately 35-40 guests."
-                if location.lower() == "whitefield"
+                if location_str.lower() == "whitefield"
                 else ""
             )
             return Recommendation(

@@ -21,7 +21,16 @@ DEFAULT_MEMORY = {
     "intent": "",
     "sentiment": "neutral",
     "recommended_option": "",
+    # ------------------------------------------------------------------ #
+    # Workflow state — tracks which mode the agent is currently in.       #
+    # Values: "general" | "qualification" | "awaiting_booking" | "booking"#
+    # ------------------------------------------------------------------ #
+    "current_workflow": "general",
+    "booking_consent_pending": False,
     "conversation": [],
+    "discussed_options": [],
+    "customer_preferences": [],
+    "concerns": [],
 }
 
 
@@ -69,6 +78,9 @@ class ConversationMemory:
         merged.update(loaded)
         if not isinstance(merged.get("conversation"), list):
             merged["conversation"] = []
+        for key in ["discussed_options", "customer_preferences", "concerns"]:
+            if not isinstance(merged.get(key), list):
+                merged[key] = []
         return merged
 
     def reset(self) -> None:
@@ -153,12 +165,41 @@ class ConversationMemory:
         active_intent = intent or self.data.get("intent", "")
         if active_intent in ("", "general_faq"):
             return False
+        if active_intent == "escape_room_inquiry":
+            if not self.data.get("preferred_date") or not self.data.get("recommended_option"):
+                return False
         return not self.missing_fields(intent=active_intent, include_contact=True)
 
     def as_prompt_context(self) -> str:
         fields = {key: value for key, value in self.data.items() if key != "conversation"}
         recent = self.data.get("conversation", [])[-8:]
         return json.dumps({"fields": fields, "recent_conversation": recent}, indent=2)
+
+    def as_state(self) -> dict:
+        """
+        Return the full memory snapshot as a plain dict.
+
+        This is the LangGraph-ready state output: when each agent becomes
+        a LangGraph node, its output state is exactly this dict.
+        No framework dependency is introduced — this is just a clean copy.
+        """
+        return dict(self.data)
+
+    def from_state(self, state: dict) -> None:
+        """
+        Load memory from a LangGraph node state dict.
+
+        When the graph passes state from one node to the next, the receiving
+        agent calls `memory.from_state(state)` to restore its context.
+        The underlying JSON file is updated so all agents share the same
+        ground-truth state.
+        """
+        merged = dict(DEFAULT_MEMORY)
+        merged.update(state)
+        if not isinstance(merged.get("conversation"), list):
+            merged["conversation"] = []
+        self.data = merged
+        self.save()
 
     @staticmethod
     def normalize_number_words(text: str) -> str:
@@ -281,8 +322,19 @@ class ConversationMemory:
         if re.search(r"\ball\s+(are|of us are)\s+\d{1,2}\s*(plus|\+)\b", lowered):
             return ""
 
+        # Check for compound group: "2 kids and 4 adults", "4 adults and 2 kids", etc.
+        type_pattern = r"(\d{1,4})\s*(people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues|guests)"
+        compound_matches = re.findall(type_pattern, lowered)
+        if len(compound_matches) >= 2:
+            try:
+                total = sum(int(count) for count, _ in compound_matches)
+                return total
+            except ValueError:
+                pass
+
+        # Standard patterns
         patterns = [
-            r"\b(\d{1,4})\s*(people|persons|guests|kids|children|adults|participants|players|members)\b",
+            r"\b(\d{1,4})\s*(people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues)\b",
             r"\bgroup of\s+(\d{1,4})\b",
             r"\bfor\s+(\d{1,4})\b",
             r"\bwe are\s+(\d{1,4})\b",
@@ -291,10 +343,27 @@ class ConversationMemory:
             match = re.search(pattern, lowered)
             if match:
                 return int(match.group(1))
+
+        # Check for "a couple" or "two of us"
+        if "couple" in lowered or "two of us" in lowered or "both of us" in lowered:
+            return 2
+
         return ""
 
     @staticmethod
     def _extract_age_group(lowered: str) -> str:
+        # Check for 18 plus / above 18 / above 20 / above 21 etc. first
+        age_patterns = [
+            r"\b(\d{1,2})\s*(?:plus|\+)\b",
+            r"\b(?:above|over|older than)\s*(\d{1,2})\b",
+        ]
+        for pattern in age_patterns:
+            match = re.search(pattern, lowered)
+            if match:
+                age_val = int(match.group(1))
+                if age_val >= 18:
+                    return "adults"
+
         patterns = [
             r"\baged?\s+(\d{1,2})\b",
             r"\b(\d{1,2})\s*years?\s*old\b",
