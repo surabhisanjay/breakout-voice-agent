@@ -72,6 +72,11 @@ _BOOKING_TRIGGERS = re.compile(
     re.IGNORECASE,
 )
 
+_BOOKING_EVENT_HINTS = re.compile(
+    r"\b(?:escape room|room|birthday|corporate|bachelor|farewell|couple|virtual|online|team building|party)\b",
+    re.IGNORECASE,
+)
+
 _NEGATIVES = frozenset({
     "no", "nope", "nah", "don't", "do not", "cancel", "stop",
     "never mind", "nevermind", "forget it", "not now", "skip it",
@@ -87,6 +92,33 @@ def _is_affirmative(text: str) -> bool:
 def _is_negative(text: str) -> bool:
     t = text.lower().strip().rstrip(".")
     return t in _NEGATIVES or any(n in t for n in _NEGATIVES)
+
+
+def _is_escape_room_follow_up(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "what would you recommend",
+            "what do you recommend",
+            "which would you recommend",
+            "which one would you recommend",
+            "which room",
+            "what room",
+            "suggest",
+            "recommend",
+            "challenging",
+            "beginner-friendly",
+            "beginner friendly",
+            "story-driven",
+            "story driven",
+            "more details",
+            "tell me more",
+            "compare",
+            "whitefield",
+            "koramangala",
+            "jp nagar",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,9 +240,58 @@ class IntentDetector:
 
         # ---- 2. Direct booking trigger ----
         if _BOOKING_TRIGGERS.search(text):
+            if _BOOKING_EVENT_HINTS.search(text):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_STRONG,
+                    "matched booking trigger with event hint",
+                    entities,
+                )
+            # Generic booking request without explicit event type; do not force escape_room_inquiry.
             return IntentResult(
-                "escape_room_inquiry", CONF_STRONG,
-                "matched booking trigger",
+                "general_faq", CONF_FALLBACK,
+                "generic booking trigger",
+                entities,
+                needs_clarification=True,
+            )
+
+        if previous_intent == "escape_room_inquiry":
+            if _is_escape_room_follow_up(text):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_PRESERVED,
+                    "escape-room follow-up preserved from prior context",
+                    entities,
+                )
+            if re.fullmatch(r"(?:around|about|approximately|approx|roughly|maybe)?\s*\d{1,5}", text):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_PRESERVED,
+                    "participant-count follow-up preserved from prior context",
+                    entities,
+                )
+            if re.fullmatch(r"\d{1,2}\s*(?:to|[-–—])\s*\d{1,2}(?:\s*years?)?", text):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_PRESERVED,
+                    "age-range follow-up preserved from prior context",
+                    entities,
+                )
+            if re.fullmatch(r"(?:people will be joining\s+)?i want to book", text):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_PRESERVED,
+                    "noisy whisper follow-up preserved from prior context",
+                    entities,
+                    needs_clarification=True,
+                )
+
+        if (
+            previous_intent in ("", "general_faq")
+            and (
+                re.search(r"\b(visiting|coming|players|kids|children|adults|people)\b", text)
+                or bool(_COUNT_PATTERN.search(text))
+            )
+            and any(location in text for location in ("whitefield", "koramangala", "jp nagar", "jp nagr", "jp"))
+        ):
+            return IntentResult(
+                "escape_room_inquiry", CONF_PRESERVED,
+                "slot-carrying room-selection context inferred from message",
                 entities,
             )
 

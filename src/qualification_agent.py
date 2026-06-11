@@ -98,7 +98,7 @@ class QualificationAgent:
     def update_and_qualify(self, message: str, intent: str | None = None) -> QualificationResult:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
         current = self.qualify(active_intent)
-        expected = current.missing_fields[0] if current.missing_fields else ""
+        expected = self._waiting_for or (current.missing_fields[0] if current.missing_fields else "")
 
         # Capture the field value explicitly
         self._capture_expected_field(message, expected, active_intent)
@@ -196,7 +196,14 @@ class QualificationAgent:
             if location:
                 self.memory.data["location"] = location
                 self.memory.save()
+        elif expected == "age_group":
+            age_group, age_detail = self.memory._extract_age_group(lowered)
 
+            if age_group:
+                self.memory.data["age_group"] = age_group
+                if age_detail:
+                    self.memory.data["age_detail"] = age_detail
+                self.memory.save()
         elif expected == "customer_name":
             name = self._extract_bare_name(message)
             if name:
@@ -208,6 +215,7 @@ class QualificationAgent:
             if phone:
                 self.memory.data["phone"] = phone
                 self.memory.save()
+
 
     # ------------------------------------------------------------------ #
     #  Validation                                                          #
@@ -274,11 +282,15 @@ class QualificationAgent:
 
     def _capture_bare_count(self, message: str, intent: str) -> None:
         normalized = self.memory.normalize_number_words(message).strip()
-        match = re.fullmatch(r"\d{1,5}", normalized)
+        match = re.search(
+            r"\b(?:around|about|approximately|approx|roughly|maybe)?\s*(\d{1,5})\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
         if not match:
             return
 
-        count = int(match.group(0))
+        count = int(match.group(1))
         if intent == "corporate_event" and not self.memory.data.get("company_size"):
             self.memory.data["company_size"] = count
         if not self.memory.data.get("participants"):
@@ -326,7 +338,10 @@ class QualificationAgent:
     @staticmethod
     def _is_valid_count(message: str) -> bool:
         return bool(
-            re.fullmatch(r"\d{1,5}", message.strip())
+            re.fullmatch(
+                r"(?:around|about|approximately|approx|roughly|maybe)?\s*\d{1,5}",
+                message.strip().lower(),
+            )
             or re.search(
                 r"\b\d{1,5}\s*(people|persons|guests|kids|children|adults|participants|players|members)\b",
                 message.lower(),

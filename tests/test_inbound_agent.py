@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import sys
-import subprocess
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ def make_agent(tmp_path: Path) -> InboundAgent:
         knowledge_base=knowledge,
         memory=memory,
         prompt_path=PROJECT_DIR / "prompts" / "inbound_prompt.txt",
-        use_ollama=False,
+        use_openai=False,
     )
 
 
@@ -82,6 +82,74 @@ def test_room_name_typo_fallback(tmp_path: Path) -> None:
     assert "investigation-style" in result["response"]
 
 
+def test_generic_booking_asks_event_type(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("I want to book")
+    assert "type of event" in result["response"].lower()
+    assert "escape room" in result["response"].lower()
+    assert agent.memory.data["intent"] == "general_faq"
+
+
+def test_direct_escape_room_booking_asks_participants_first(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("I want to book an escape room")
+    assert "how many" in result["response"].lower() or "people will attend" in result["response"].lower()
+    assert agent.memory.data["intent"] == "escape_room_inquiry"
+
+
+def test_escape_room_inquiry_bare_number_captures_participants(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want an escape room")
+    result = agent.handle_message("10")
+
+    assert agent.memory.data["participants"] == 10
+    assert result["intent"] == "escape_room_inquiry"
+    assert "location" in result["response"].lower()
+
+
+def test_escape_room_inquiry_approx_number_captures_participants(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want an escape room")
+    result = agent.handle_message("around 10")
+
+    assert agent.memory.data["participants"] == 10
+    assert result["intent"] == "escape_room_inquiry"
+    assert "location" in result["response"].lower()
+
+
+def test_active_escape_room_flow_preserves_intent_on_noisy_whisper_transcript(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want an escape room")
+    result = agent.handle_message("people will be joining I want to book")
+
+    assert result["intent"] == "escape_room_inquiry"
+    assert agent.memory.data["intent"] == "escape_room_inquiry"
+    assert agent.memory.data["event_type"] == "Escape Room"
+
+
+def test_location_answer_updates_memory_during_active_escape_room_flow(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want an escape room")
+    agent.handle_message("10")
+    result = agent.handle_message("Whitefield")
+
+    assert agent.memory.data["location"] == "Whitefield"
+    assert result["intent"] == "escape_room_inquiry"
+    assert "age group" in result["response"].lower() or "players" in result["response"].lower()
+
+
+def test_age_answer_updates_memory_during_active_escape_room_flow(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want an escape room")
+    agent.handle_message("10")
+    agent.handle_message("Whitefield")
+    result = agent.handle_message("20-25")
+
+    assert agent.memory.data["age_group"] == "adults"
+    assert agent.memory.data["age_detail"] == "20-25"
+    assert result["intent"] == "escape_room_inquiry"
+
+
 def test_kids_recommendation(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("We have 6 kids aged 10.")
@@ -99,6 +167,44 @@ def test_free_form_kids_recommendation_with_location(tmp_path: Path) -> None:
     assert "Whitefield" in result["response"]
     assert "more details" in result["response"]
     assert result["missing_fields"] == []
+
+
+def test_age_range_recognized_as_age_group(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.data.update(
+        {
+            "intent": "escape_room_inquiry",
+            "participants": 5,
+            "location": "Koramangala",
+        }
+    )
+    agent.memory.save()
+
+    result = agent.handle_message("10-15 years")
+
+    assert agent.memory.data["age_group"] == "teens"
+    assert "Murder Mystery" in result["response"] or "Hostage" in result["response"]
+    assert result["missing_fields"] == []
+
+
+def test_explicit_booking_clear_stale_memory(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.data.update(
+        {
+            "location": "Koramangala",
+            "participants": 5,
+            "age_group": "kids",
+            "intent": "escape_room_inquiry",
+        }
+    )
+    agent.memory.save()
+
+    result = agent.handle_message("I want to book")
+
+    assert "type of event" in result["response"].lower()
+    assert agent.memory.data["location"] == ""
+    assert agent.memory.data["participants"] == ""
+    assert agent.memory.data["age_group"] == ""
 
 
 def test_adult_game_recommendation(tmp_path: Path) -> None:
@@ -180,6 +286,32 @@ def test_recommendation_uses_prior_context_and_experience_level(tmp_path: Path) 
     assert "Whitefield" in follow_up["response"]
 
 
+def test_challenge_preference_advances_instead_of_repeating(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("We are six people visiting Whitefield.")
+    age_turn = agent.handle_message("10-15")
+    first = agent.handle_message("challenging")
+    second = agent.handle_message("challenging")
+
+    assert agent.memory.data["age_group"] == "teens"
+    assert "What interests you?" in age_turn["response"]
+    assert agent.memory.data["challenge_preference"] == "challenging"
+    assert "Bomb Defusal" in first["response"]
+    assert "Are you looking for something challenging" not in first["response"]
+    assert second["response"] == first["response"]
+
+
+def test_debug_state_flow_contains_previous_extracted_and_updated_state(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("We are six adults visiting Whitefield.")
+
+    assert result["debug"]["previous_state"]["participants"] == ""
+    assert result["debug"]["extracted_entities"]["participants"] == 6
+    assert result["debug"]["extracted_entities"]["age_group"] == "adults"
+    assert result["debug"]["updated_state"]["participants"] == 6
+    assert result["debug"]["missing_slots"] == []
+
+
 def test_first_time_players_use_existing_context(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     agent.handle_message("We are six adults visiting Whitefield.")
@@ -219,27 +351,29 @@ def test_all_are_18_plus_sets_adults_without_changing_count(tmp_path: Path) -> N
     assert "For a group of 6 adults visiting Whitefield" in result["response"]
 
 
-def test_ollama_timeout_recovery(monkeypatch, tmp_path: Path) -> None:
+def test_openai_response_is_used(monkeypatch, tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
-    agent.use_ollama = True
+    agent.use_openai = True
     monkeypatch.setattr(agent.retriever, "search", lambda _query: "Known Breakout context")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    class HangingProcess:
-        pid = 12345
-        returncode = None
+    class FakeResponses:
+        def create(self, **kwargs):
+            assert kwargs["model"] == "gpt-5-mini"
+            assert "Known Breakout context" in kwargs["input"]
+            return SimpleNamespace(output_text="OpenAI response")
 
-        def communicate(self, timeout: int):
-            raise subprocess.TimeoutExpired(cmd="ollama", timeout=timeout)
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            assert kwargs["api_key"] == "test-key"
+            self.responses = FakeResponses()
 
-        def wait(self, timeout: int):
-            return None
-
-    monkeypatch.setattr("src.inbound_agent.subprocess.Popen", lambda *args, **kwargs: HangingProcess())
-    monkeypatch.setattr("src.inbound_agent.os.killpg", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
 
     result = agent.handle_message("Tell me something unusual that is not in the common FAQs.")
-    assert result["response"] == "I don't currently have that information, but I can connect you with the appropriate team."
-    assert agent.last_ollama_error == "timeout"
+
+    assert result["response"] == "OpenAI response"
+    assert agent.last_openai_error == ""
 
 
 def test_qualification_flow_completion(tmp_path: Path) -> None:
@@ -423,7 +557,40 @@ def test_booking_after_location_and_room_starts_booking_flow(tmp_path: Path) -> 
     assert result["intent"] == "escape_room_inquiry"
     assert result["route"]["next_agent"] != "inbound_agent"
     assert agent.memory.data["room"] == "Murder Mystery"
-    assert "how many" in result["response"].lower() or "what date" in result["response"].lower() or "what is the age group" in result["response"].lower()
+    assert "type of event" not in result["response"].lower()
+    assert "may i have your name" in result["response"].lower()
+
+
+def test_booking_acceptance_after_escape_room_recommendation_moves_to_contact_collection(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("We are six adults visiting Whitefield.")
+    recommendation = agent.handle_message("We've never done an escape room before.")
+    assert "Murder Mystery" in recommendation["response"]
+    assert agent.memory.data["recommended_option"]
+
+    result = agent.handle_message("Book it")
+
+    assert result["intent"] == "escape_room_inquiry"
+    assert result["route"]["next_agent"] != "inbound_agent"
+    assert agent.memory.data["participants"] == 6
+    assert agent.memory.data["location"] == "Whitefield"
+    assert agent.memory.data["age_group"] == "adults"
+    assert "type of event" not in result["response"].lower()
+    assert "may i have your name" in result["response"].lower()
+
+
+def test_booking_acceptance_variations_reuse_current_recommendation(tmp_path: Path) -> None:
+    for acceptance in ("Reserve it", "Let's do that", "Go ahead", "Sounds good"):
+        agent = make_agent(tmp_path)
+        agent.handle_message("We are six adults visiting Whitefield.")
+        agent.handle_message("We've never done an escape room before.")
+
+        result = agent.handle_message(acceptance)
+
+        assert result["intent"] == "escape_room_inquiry"
+        assert agent.memory.data["recommended_option"]
+        assert "type of event" not in result["response"].lower()
+        assert "name" in result["response"].lower() or "phone" in result["response"].lower()
 
 
 def test_typo_kidss_corrects_adult_recommendation(tmp_path: Path) -> None:
@@ -1098,5 +1265,3 @@ def test_show_memory_all_fields_after_full_qualification(monkeypatch, capsys, tm
     assert mem["food_required"] is True
     assert mem["customer_name"] == "Siddharth"
     assert mem["phone"] == "9876543210"
-
-
