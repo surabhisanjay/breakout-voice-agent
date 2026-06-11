@@ -60,6 +60,10 @@ class AgentResponse:
     handoff_summary: dict | None = None
     booking_result: dict | None = None
     """Set by BookingAgent once a booking is confirmed."""
+    booking: dict | None = None
+    """Compatibility field with surabhi/main containing booking result."""
+    debug: dict = field(default_factory=dict)
+    """Compatibility field with surabhi/main containing state snapshot and entities."""
 
     # ------------------------------------------------------------------ #
     # Backward-compatible dict-style access                                #
@@ -82,6 +86,8 @@ class AgentResponse:
             "qualification": self.qualification,
             "handoff_summary": self.handoff_summary,
             "booking_result": self.booking_result,
+            "booking": self.booking,
+            "debug": self.debug,
             "state": self.state,
             # Legacy key used by some older test assertions
             "route": {

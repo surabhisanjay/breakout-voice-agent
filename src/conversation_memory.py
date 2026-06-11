@@ -12,12 +12,15 @@ DEFAULT_MEMORY = {
     "location": "",
     "participants": "",
     "age_group": "",
+    "age_detail": "",
     "experience_level": "",
+    "challenge_preference": "",
     "company_size": "",
     "event_type": "",
     "preferred_date": "",
     "food_required": "",
     "budget_range": "",
+    "room": "",
     "intent": "",
     "sentiment": "neutral",
     "recommended_option": "",
@@ -37,7 +40,7 @@ DEFAULT_MEMORY = {
 class ConversationMemory:
     LOCATIONS = ("Koramangala", "Whitefield", "JP Nagar")
     FLOW_FIELDS = {
-        "escape_room_inquiry": ["age_group", "participants", "location"],
+        "escape_room_inquiry": ["participants", "location", "age_group"],
         "birthday_party": ["location", "participants", "preferred_date"],
         "corporate_event": ["location", "company_size", "preferred_date"],
         "bachelor_party": ["participants", "location", "preferred_date"],
@@ -90,61 +93,112 @@ class ConversationMemory:
     def save(self) -> None:
         self.session_path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
 
+    def reset_booking_fields(self) -> None:
+        for field in [
+            "location",
+            "participants",
+            "age_group",
+            "experience_level",
+            "company_size",
+            "event_type",
+            "preferred_date",
+            "food_required",
+            "budget_range",
+            "room",
+            "intent",
+            "recommended_option",
+            "sentiment",
+        ]:
+            self.data[field] = DEFAULT_MEMORY[field]
+        self.save()
+
     def update_from_message(self, message: str, intent: str, recommendation: str = "") -> None:
+        self.merge_message(message, intent, recommendation)
+
+    def merge_message(self, message: str, intent: str, recommendation: str = "") -> dict[str, Any]:
         text = self.normalize_number_words(message.strip())
         lowered = text.lower()
+        extracted: dict[str, Any] = {}
 
         if intent:
             self.data["intent"] = intent
+            extracted["intent"] = intent
             event_type = self.EVENT_BY_INTENT.get(intent, "")
             if event_type:
                 self.data["event_type"] = event_type
+                extracted["event_type"] = event_type
 
         if recommendation:
             self.data["recommended_option"] = recommendation
+            extracted["recommended_option"] = recommendation
 
         name = self._extract_name(text)
         if name:
             self.data["customer_name"] = name
+            extracted["customer_name"] = name
 
         phone = self._extract_phone(text)
         if phone:
             self.data["phone"] = phone
+            extracted["phone"] = phone
 
         location = self._extract_location(lowered)
         if location:
             self.data["location"] = location
+            extracted["location"] = location
+
+        room = self._extract_room(lowered)
+        if room:
+            self.data["room"] = room
+            extracted["room"] = room
 
         participants = self._extract_participants(lowered)
         if participants:
             self.data["participants"] = participants
+            extracted["participants"] = participants
 
-        age_group = self._extract_age_group(lowered)
+        age_group, age_detail = self._extract_age_group(lowered)
         if age_group:
             self.data["age_group"] = age_group
+            extracted["age_group"] = age_group
+        if age_detail:
+            self.data["age_detail"] = age_detail
+            extracted["age_detail"] = age_detail
 
         experience_level = self._extract_experience_level(lowered)
         if experience_level:
             self.data["experience_level"] = experience_level
+            extracted["experience_level"] = experience_level
+
+        challenge_preference = self._extract_challenge_preference(lowered)
+        if challenge_preference:
+            self.data["challenge_preference"] = challenge_preference
+            extracted["challenge_preference"] = challenge_preference
 
         company_size = self._extract_company_size(lowered)
         if company_size:
             self.data["company_size"] = company_size
+            extracted["company_size"] = company_size
 
         preferred_date = self._extract_preferred_date(text)
         if preferred_date:
             self.data["preferred_date"] = preferred_date
+            extracted["preferred_date"] = preferred_date
 
         food_required = self._extract_food_required(lowered)
         if food_required:
             self.data["food_required"] = food_required
+            extracted["food_required"] = food_required
 
         budget_range = self._extract_budget_range(text)
         if budget_range:
             self.data["budget_range"] = budget_range
+            extracted["budget_range"] = budget_range
 
         self.data["sentiment"] = self._detect_sentiment(lowered)
+        extracted["sentiment"] = self.data["sentiment"]
         self.save()
+        return extracted
 
     def add_turn(self, role: str, content: str) -> None:
         self.data.setdefault("conversation", []).append({"role": role, "content": content})
@@ -316,6 +370,25 @@ class ConversationMemory:
         return ""
 
     @staticmethod
+    def _extract_room(lowered: str) -> str:
+        rooms = [
+            "murder mystery",
+            "hostage",
+            "curse of the pharaoh",
+            "classified",
+            "undercover",
+            "the wizarding championship",
+            "the forbidden forest",
+            "bomb defusal",
+            "prison break",
+            "zodiac",
+        ]
+        for room in rooms:
+            if room in lowered:
+                return room.title()
+        return ""
+
+    @staticmethod
     def _extract_participants(lowered: str) -> int | str:
         if re.search(r"\b(these|those|both|either)\s+\d{1,2}\b", lowered):
             return ""
@@ -351,7 +424,7 @@ class ConversationMemory:
         return ""
 
     @staticmethod
-    def _extract_age_group(lowered: str) -> str:
+    def _extract_age_group(lowered: str) -> tuple[str, str]:
         # Check for 18 plus / above 18 / above 20 / above 21 etc. first
         age_patterns = [
             r"\b(\d{1,2})\s*(?:plus|\+)\b",
@@ -362,27 +435,81 @@ class ConversationMemory:
             if match:
                 age_val = int(match.group(1))
                 if age_val >= 18:
-                    return "adults"
+                    return "adults", f"{age_val}+"
+
+        # Accept range patterns:
+        # 10-15
+        # 10 to 15
+        # age 10-15
+        # ages 10 to 15 years
+        # 10-15 years
+
+        range_patterns = [
+            r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\b",
+            r"\b(?:ages?|age)\s+(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\s*years?\b",
+            r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\s*years?\b",
+        ]
+
+        for pattern in range_patterns:
+            match = re.search(pattern, lowered)
+            if match:
+                low = int(match.group(1))
+                high = int(match.group(2))
+                age_detail = f"{low}-{high}"
+                if high <= 8:
+                    return "kids", age_detail
+                if high <= 17:
+                    return "teens", age_detail
+                return "adults", age_detail
 
         patterns = [
             r"\baged?\s+(\d{1,2})\b",
             r"\b(\d{1,2})\s*years?\s*old\b",
             r"\bage\s+(\d{1,2})\b",
         ]
+
         for pattern in patterns:
             match = re.search(pattern, lowered)
             if match:
-                return f"{match.group(1)} years"
-        if "kids" in lowered or "children" in lowered:
-            return "kids"
-        plus_match = re.search(r"\ball\s+(?:are|of us are)\s+(\d{1,2})\s*(?:plus|\+)\b", lowered)
+                age = int(match.group(1))
+
+                if age <= 8:
+                    return "kids", f"{age} years"
+                elif age <= 17:
+                    return "teens", f"{age} years"
+                else:
+                    return "adults", f"{age} years"
+
+        if "children" in lowered:
+            return "kids", ""
+
+        import difflib
+
+        words = re.findall(r"\b\w+\b", lowered)
+
+        for word in words:
+            if difflib.SequenceMatcher(None, word, "kids").ratio() > 0.75:
+                return "kids", ""
+
+        plus_match = re.search(
+            r"\ball\s+(?:are|of us are)\s+(\d{1,2})\s*(?:plus|\+)\b",
+            lowered,
+        )
+
         if plus_match and int(plus_match.group(1)) >= 18:
-            return "adults"
-        if "adults" in lowered or "adult" in lowered:
-            return "adults"
+            return "adults", f"{plus_match.group(1)}+"
+
+        for word in words:
+            if difflib.SequenceMatcher(None, word, "adult").ratio() > 0.80:
+                return "adults", ""
+
+            if difflib.SequenceMatcher(None, word, "adults").ratio() > 0.75:
+                return "adults", ""
+
         if "teen" in lowered:
-            return "teens"
-        return ""
+            return "teens", ""
+
+        return "", ""
 
     @staticmethod
     def _extract_experience_level(lowered: str) -> str:
@@ -391,6 +518,16 @@ class ConversationMemory:
             return "beginner"
         if "experienced" in lowered or "done escape rooms before" in lowered:
             return "experienced"
+        return ""
+
+    @staticmethod
+    def _extract_challenge_preference(lowered: str) -> str:
+        if any(term in lowered for term in ("beginner-friendly", "beginner friendly", "relaxed", "calmer", "easy", "easier")):
+            return "beginner"
+        if any(term in lowered for term in ("story-driven", "story driven", "story", "mystery", "investigation")):
+            return "story"
+        if any(term in lowered for term in ("challenging", "challenge", "hard", "hardest", "intense", "fast-paced", "pressure")):
+            return "challenging"
         return ""
 
     @staticmethod

@@ -45,7 +45,7 @@ def build_inbound_agent(args: argparse.Namespace, memory: ConversationMemory) ->
         memory=memory,
         prompt_path=BASE_DIR / "prompts" / "inbound_prompt.txt",
         model=args.model,
-        use_ollama=not args.no_ollama,
+        use_openai=not args.no_openai,
     )
 
 
@@ -62,13 +62,20 @@ def build_agent(args: argparse.Namespace) -> InboundAgent:
 def print_result(result: AgentResponse, show_debug: bool) -> None:
     print(f"\nAgent: {result.response}")
     if show_debug:
+        debug = result.get("debug", {})
         print("\n--- Debug ---")
         print(f"Intent: {result.intent} ({result.intent_confidence:.2f})")
         print(f"Recommendation: {result.recommendation.get('option', '')}")
         print(f"Missing fields: {', '.join(result.missing_fields) or 'none'}")
         print(f"Route: {result.next_agent} | handoff={result.should_handoff}")
+        print(f"Previous state: {json.dumps(debug.get('previous_state', {}), ensure_ascii=False)}")
+        print(f"Extracted entities: {json.dumps(debug.get('extracted_entities', {}), ensure_ascii=False)}")
+        print(f"Updated state: {json.dumps(debug.get('updated_state', {}), ensure_ascii=False)}")
+        print(f"Missing slots: {', '.join(debug.get('missing_slots', [])) or 'none'}")
         if result.booking_result:
             print(f"Booking: {json.dumps(result.booking_result, indent=2)}")
+        elif result.booking:
+            print(f"Booking: {json.dumps(result.booking, indent=2)}")
         else:
             print(f"Handoff summary: {result.handoff_summary}")
 
@@ -284,9 +291,9 @@ def run_voice_loop(args: argparse.Namespace) -> None:
 # ------------------------------------------------------------------ #
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local Breakout Escape Rooms Inbound Agent")
-    parser.add_argument("--model", default="qwen3:8b", help="Ollama model name")
-    parser.add_argument("--no-ollama", action="store_true", help="Use deterministic fallback responses only")
+    parser = argparse.ArgumentParser(description="Breakout Escape Rooms OpenAI inbound agent")
+    parser.add_argument("--model", help="OpenAI model name (default: OPENAI_MODEL or gpt-5-mini)")
+    parser.add_argument("--no-openai", action="store_true", help="Use deterministic fallback responses only")
     parser.add_argument("--reset-memory", action="store_true", help="Clear memory/session.json at startup")
     parser.add_argument("--debug", action="store_true", help="Print intent, route, and handoff details")
     parser.add_argument("--speak", action="store_true", help="Enable pyttsx3 text-to-speech in text mode")

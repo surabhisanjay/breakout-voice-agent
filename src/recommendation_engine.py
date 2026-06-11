@@ -44,7 +44,10 @@ class RecommendationEngine:
                 str(event_type).lower(),
                 str(participants).lower(),
                 str(age_group).lower(),
+                str(memory.get("age_detail", "")).lower(),
                 str(experience_level).lower(),
+                str(memory.get("challenge_preference", "")).lower(),
+                str(location).lower(),
                 str(intent).lower(),
             ]
         )
@@ -104,6 +107,24 @@ class RecommendationEngine:
             return Recommendation(
                 "Classified, Undercover, Prison Break, or Bomb Defusal",
                 "These are suitable choices for adults looking for a more challenging experience."
+            )
+
+        if "challenging" in text or "challenge" in text or "hard" in text or "hardest" in text:
+            return Recommendation(
+                "challenging",
+                "The group wants a more challenging escape room.",
+            )
+
+        if "story" in text or "mystery" in text or "investigation" in text:
+            return Recommendation(
+                "story",
+                "The group prefers a story-driven or investigation-style room.",
+            )
+
+        if "adult" in text or "adults" in text:
+            return Recommendation(
+                "adults",
+                "Adult group context is available for a stronger recommendation.",
             )
 
         if intent == "birthday_party":

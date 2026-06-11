@@ -1,19 +1,17 @@
 # Breakout Inbound Agent MVP
 
-Local production-style MVP for Agent #1 in a multi-agent AI call center for Breakout Escape Rooms.
+OpenAI-powered production-style MVP for Agent #1 in a multi-agent AI call center for Breakout Escape Rooms.
 
 This is not a chatbot. It is an inbound intake agent that greets customers, detects intent, answers basic company questions, recommends suitable rooms or packages, collects missing details, generates a structured handoff summary, and routes to the next agent.
 
 ## Stack
 
 - Python
-- Ollama
-- Qwen3:8b
+- OpenAI Responses API
+- GPT-5 mini by default
 - Whisper for speech-to-text
 - pyttsx3 for text-to-speech
-- No OpenAI APIs
 - No Claude APIs
-- No cloud services
 
 ## Project Structure
 
@@ -80,10 +78,11 @@ The inbound agent must not:
 
 ## Setup
 
-Install Ollama and pull the local model:
+Create a `.env` file with your OpenAI API key. You can optionally override the default model:
 
-```bash
-ollama pull qwen3:8b
+```dotenv
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL=gpt-5-mini
 ```
 
 Create a virtual environment and install dependencies:
@@ -107,10 +106,10 @@ brew install portaudio
 python main.py --debug
 ```
 
-Use deterministic fallback responses without Ollama:
+Use deterministic fallback responses without calling OpenAI:
 
 ```bash
-python main.py --no-ollama --debug
+python main.py --no-openai --debug
 ```
 
 Reset memory at startup:
@@ -167,7 +166,7 @@ python ../work/extract_breakout_knowledge.py
 
 ## Retrieval
 
-Before using Qwen, the agent performs lightweight keyword retrieval over `faq.txt`, `games.txt`, `events.txt`, and `policies.txt`, then injects only the relevant sections into the prompt. The full knowledge base is not sent to the model.
+Before calling OpenAI, the agent performs lightweight keyword retrieval over `faq.txt`, `games.txt`, `events.txt`, and `policies.txt`, then injects only the relevant sections into the prompt. The full knowledge base is not sent to the model.
 
 ## Tests
 
