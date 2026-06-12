@@ -99,9 +99,10 @@ def dispatch(
     """
     manager = ConversationManager(inbound.memory)
     target_agent, category = manager.determine_routing(message, active_agent)
+    preempted_active_booking = active_agent == "booking_agent" and target_agent == "inbound_agent"
 
     # 1. Handle preemption from booking_agent to inbound_agent (e.g., FAQ, recommendation, new inquiry)
-    if active_agent == "booking_agent" and target_agent == "inbound_agent":
+    if preempted_active_booking:
         active_agent = "inbound_agent"
         inbound.memory.data["current_workflow"] = "general"
         inbound.memory.data["booking_consent_pending"] = False
@@ -115,7 +116,31 @@ def dispatch(
         inbound.memory.save()
 
     # 2. Handle new inquiry topic switch (reset qualification memory)
-    if category in {"new_corporate", "new_birthday", "new_escape_room", "new_booking"}:
+    category_intents = {
+        "new_corporate": "corporate_event",
+        "new_birthday": "birthday_party",
+        "new_escape_room": "escape_room_inquiry",
+    }
+    current_intent = str(inbound.memory.data.get("intent", ""))
+    requested_intent = category_intents.get(category, "")
+    if category == "new_booking":
+        detected = manager.intent_detector.detect(message, previous_intent="").intent
+        if detected in {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}:
+            requested_intent = detected
+    is_actual_topic_switch = bool(requested_intent and current_intent and requested_intent != current_intent)
+    extracted_participants = inbound.memory._extract_participants(
+        inbound.memory.normalize_number_words(message).lower()
+    )
+    stored_participants = inbound.memory.data.get("participants")
+    is_replacement_group = bool(
+        requested_intent
+        and requested_intent == current_intent
+        and extracted_participants
+        and stored_participants
+        and extracted_participants != stored_participants
+    )
+
+    if is_actual_topic_switch or is_replacement_group:
         fields_to_clear = [
             "location", "participants", "age_group", "experience_level",
             "company_size", "event_type", "preferred_date", "food_required",
@@ -145,6 +170,13 @@ def dispatch(
 
     # InboundAgent handles this turn
     result = inbound.handle_message(message)
+
+    # A practical question or recommendation that interrupted booking must be
+    # answered without immediately bouncing the same turn back into booking.
+    if preempted_active_booking and category in {"faq", "recommendation"}:
+        result.should_handoff = False
+        result.next_agent = "inbound_agent"
+        return result, booking, "inbound_agent"
 
     # Handoff decision — any qualified intent routes to BookingAgent.
     # The Router may name the target "corporate_events_agent", "birthday_booking_agent" etc.
@@ -292,7 +324,7 @@ def run_voice_loop(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Breakout Escape Rooms OpenAI inbound agent")
-    parser.add_argument("--model", help="OpenAI model name (default: OPENAI_MODEL or gpt-5-mini)")
+    parser.add_argument("--model", help="OpenAI model name (default: OPENAI_MODEL or gpt-4.1-mini)")
     parser.add_argument("--no-openai", action="store_true", help="Use deterministic fallback responses only")
     parser.add_argument("--reset-memory", action="store_true", help="Clear memory/session.json at startup")
     parser.add_argument("--debug", action="store_true", help="Print intent, route, and handoff details")

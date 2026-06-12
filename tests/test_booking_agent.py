@@ -690,3 +690,29 @@ def test_reschedule_and_cancel():
 
     cancelled = agent.cancel(booking.reference, reason="customer_request")
     assert cancelled.status == "cancelled"
+
+
+def test_booking_tools_load_environment_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_BASE_URL", "https://booking.example.test/")
+    monkeypatch.setenv("BOOKING_API_KEY", "booking-test-key")
+
+    availability = AvailabilityTool()
+    booking = BookingTool()
+
+    assert availability.base_url == "https://booking.example.test"
+    assert booking.base_url == "https://booking.example.test"
+    assert availability.api_key == "booking-test-key"
+    assert booking.api_key == "booking-test-key"
+
+
+def test_booking_tools_use_safe_default_configuration(monkeypatch) -> None:
+    monkeypatch.delenv("BOOKING_BASE_URL", raising=False)
+    monkeypatch.delenv("BOOKING_API_KEY", raising=False)
+
+    availability = AvailabilityTool()
+    booking = BookingTool()
+
+    assert availability.base_url == "https://bs.kreeda.icu"
+    assert booking.base_url == "https://bs.kreeda.icu"
+    assert availability.api_key == ""
+    assert booking.api_key == ""

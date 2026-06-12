@@ -295,7 +295,10 @@ class SlotFiller:
 # Integrated router (ties SlotFiller + IntentDetector together)
 # ---------------------------------------------------------------------------
 
-from intent_detector import IntentDetector, CONF_PRESERVED   # type: ignore
+try:
+    from .intent_detector import IntentDetector, CONF_PRESERVED
+except ImportError:  # Support direct execution from the src directory.
+    from intent_detector import IntentDetector, CONF_PRESERVED  # type: ignore
 
 _BOOKING_INTENTS = {
     "birthday_party", "bachelor_party", "farewell_party",

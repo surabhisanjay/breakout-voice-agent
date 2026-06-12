@@ -11,7 +11,7 @@ TO INTEGRATE WITH BREAKOUT'S BOOKING SYSTEM
 Replace the body of `create()` with an HTTP POST to the booking API:
     import httpx
     response = httpx.post(
-        "https://api.breakout.in/v1/bookings",
+        f"{self.base_url}/v1/bookings",
         json=payload,
         headers={"Authorization": f"Bearer {API_KEY}"},
         timeout=10,
@@ -22,7 +22,11 @@ No other files need to change — the interface is fixed.
 """
 from __future__ import annotations
 
+import os
 import uuid
+
+
+DEFAULT_BOOKING_BASE_URL = "https://bs.kreeda.icu"
 
 
 class BookingTool:
@@ -42,6 +46,10 @@ class BookingTool:
         customer_name: str
         phone       : str
     """
+
+    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
+        self.base_url = (base_url or os.environ.get("BOOKING_BASE_URL") or DEFAULT_BOOKING_BASE_URL).rstrip("/")
+        self.api_key = api_key if api_key is not None else os.environ.get("BOOKING_API_KEY", "")
 
     def create(self, memory: dict, chosen_slot: str) -> dict:
         """

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -29,6 +30,7 @@ DEFAULT_MEMORY = {
     # Values: "general" | "qualification" | "awaiting_booking" | "booking"#
     # ------------------------------------------------------------------ #
     "current_workflow": "general",
+    "conversation_mode": "sales",
     "booking_consent_pending": False,
     "conversation": [],
     "discussed_options": [],
@@ -72,12 +74,12 @@ class ConversationMemory:
         if not self.session_path.exists():
             self.session_path.parent.mkdir(parents=True, exist_ok=True)
             self.session_path.write_text(json.dumps(DEFAULT_MEMORY, indent=2), encoding="utf-8")
-            return dict(DEFAULT_MEMORY)
+            return copy.deepcopy(DEFAULT_MEMORY)
         try:
             loaded = json.loads(self.session_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             loaded = {}
-        merged = dict(DEFAULT_MEMORY)
+        merged = copy.deepcopy(DEFAULT_MEMORY)
         merged.update(loaded)
         if not isinstance(merged.get("conversation"), list):
             merged["conversation"] = []
@@ -87,7 +89,7 @@ class ConversationMemory:
         return merged
 
     def reset(self) -> None:
-        self.data = dict(DEFAULT_MEMORY)
+        self.data = copy.deepcopy(DEFAULT_MEMORY)
         self.save()
 
     def save(self) -> None:
@@ -513,7 +515,10 @@ class ConversationMemory:
 
     @staticmethod
     def _extract_experience_level(lowered: str) -> str:
-        beginner_terms = ("beginner", "first time", "first-time", "never done", "new to escape")
+        beginner_terms = (
+            "beginner", "first time", "first-time", "never done", "never played",
+            "none of us have played", "none of us has played", "new to escape",
+        )
         if any(term in lowered for term in beginner_terms):
             return "beginner"
         if "experienced" in lowered or "done escape rooms before" in lowered:

@@ -8,7 +8,7 @@ This is not a chatbot. It is an inbound intake agent that greets customers, dete
 
 - Python
 - OpenAI Responses API
-- GPT-5 mini by default
+- GPT-4.1 mini by default for customer-facing response composition
 - Whisper for speech-to-text
 - pyttsx3 for text-to-speech
 - No Claude APIs
@@ -23,13 +23,20 @@ Breakout-Agent/
 │   ├── events.txt
 │   └── policies.txt
 ├── prompts/
-│   └── inbound_prompt.txt
+│   ├── inbound_prompt.txt
+│   ├── breakout_personality_prompt.txt
+│   └── conversation_playbook.txt
 ├── memory/
 │   └── session.json
 ├── src/
 │   ├── knowledge_loader.py
 │   ├── intent_detector.py
 │   ├── recommendation_engine.py
+│   ├── response_composer.py
+│   ├── conversation_modes.py
+│   ├── booking_provider.py
+│   ├── integrations/
+│   │   └── breakout_api.py
 │   ├── conversation_memory.py
 │   ├── handoff_generator.py
 │   ├── voice_input.py
@@ -81,8 +88,10 @@ The inbound agent must not:
 Create a `.env` file with your OpenAI API key. You can optionally override the default model:
 
 ```dotenv
-OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL=gpt-5-mini
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
+BOOKING_API_KEY=
+BOOKING_BASE_URL=https://bs.kreeda.icu
 ```
 
 Create a virtual environment and install dependencies:
@@ -168,6 +177,25 @@ python ../work/extract_breakout_knowledge.py
 
 Before calling OpenAI, the agent performs lightweight keyword retrieval over `faq.txt`, `games.txt`, `events.txt`, and `policies.txt`, then injects only the relevant sections into the prompt. The full knowledge base is not sent to the model.
 
+## Personality And Response Composition
+
+Intent detection, slot filling, qualification, routing, recommendations, and booking decisions remain deterministic. The approved response and structured state are passed to the OpenAI Response Composer, which applies the Breakout hospitality voice from `prompts/breakout_personality_prompt.txt`. If OpenAI is unavailable, times out, or returns an empty response, the approved deterministic response is used immediately.
+
+Conversation wording is selected using five modes: `sales`, `recommendation`, `booking`, `rescue`, and `faq`.
+
+The transcript-derived conversation playbook operationalizes acknowledgment, recommendation, reassurance, objection handling, policy explanation, light humor, qualification, and closing patterns. The composer uses it together with the personality prompt on every dynamic Inbound Agent and Booking Agent business response.
+
+Voice startup greetings, unclear-transcript clarification, exit farewells, and local QA commands remain deterministic so they are immediate and reliable.
+
+## Booking Provider
+
+The Booking Agent uses a provider abstraction without changing its state machine:
+
+- `SimulatorProvider` uses the existing local availability and booking tools.
+- `BreakoutAPIProvider` implements the documented locations, games, slots, and prepare-booking endpoints.
+
+When `BOOKING_API_KEY` and `BOOKING_BASE_URL` are configured, the real provider is selected. Otherwise the application falls back to the simulator. A prepared API booking is not described as confirmed until checkout is completed.
+
 ## Tests
 
 Run the automated test suite:
@@ -175,6 +203,8 @@ Run the automated test suite:
 ```bash
 python -m pytest tests -q
 ```
+
+The demo-readiness suite covers first-time players, couples, families, corporate groups, late arrivals, briefings, unsuccessful escapes, topic interruptions, recommendation-first behavior, compound questions, booking mode, and session isolation.
 
 Voice architecture:
 
@@ -223,7 +253,7 @@ We have 6 kids aged 10.
 Agent:
 
 ```text
-Sure. Murder Mystery or Hostage would be a good fit. They are suitable for children aged 9+ and work well for beginner groups. Got it. Could you share your name and a phone number?
+For 6 kids aged 10, I'd recommend Murder Mystery or Hostage. Murder Mystery focuses on investigation and clue solving, while Hostage adds more urgency with a rescue-style story. Which location are you planning to visit?
 ```
 
 ### Adult Challenge Recommendation
@@ -237,7 +267,7 @@ We are adults looking for a challenging room.
 Agent:
 
 ```text
-Sure. Classified, Undercover, Prison Break, or Bomb Defusal would be a good fit. These are popular choices for adults looking for a more challenging experience. Got it. Could you share your name and a phone number?
+For adults looking for a challenge, I'd recommend Classified or Bomb Defusal. Classified is investigation-led, while Bomb Defusal is more intense and time-pressured. Which location are you planning to visit?
 ```
 
 ### Memory

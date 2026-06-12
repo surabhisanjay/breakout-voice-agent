@@ -9,12 +9,19 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .agent_response import AgentResponse
+from .booking_provider import (
+    BookingProvider,
+    ProviderAvailabilityAdapter,
+    ProviderBookingAdapter,
+    build_booking_provider,
+)
+from .conversation_modes import ConversationMode, ConversationModeDetector
 from .conversation_memory import ConversationMemory
-from .tools.availability_tool import AvailabilityTool
-from .tools.booking_tool import BookingTool
+from .response_composer import ResponseComposer
 
 
 class BookingError(Exception):
@@ -54,10 +61,15 @@ class BookingAgent:
     _STATE_BOOKING_CONFIRMED = "booking_confirmed"
     _STATE_CLOSED = "closed"
 
-    def __init__(self, memory: ConversationMemory) -> None:
+    def __init__(self, memory: ConversationMemory, provider: BookingProvider | None = None) -> None:
         self.memory = memory
-        self.availability_tool = AvailabilityTool()
-        self.booking_tool = BookingTool()
+        self.provider = provider or build_booking_provider()
+        self.availability_tool = ProviderAvailabilityAdapter(self.provider, memory.data)
+        self.booking_tool = ProviderBookingAdapter(self.provider)
+        self.mode_detector = ConversationModeDetector()
+        self.response_composer = ResponseComposer(
+            Path(__file__).resolve().parents[1] / "prompts" / "breakout_personality_prompt.txt"
+        )
 
         # Internal state machine
         self._state: str = self._STATE_CHECKING_AVAILABILITY
@@ -96,6 +108,15 @@ class BookingAgent:
             booking_result = self._booking_result
 
         response = self._clean_response(response)
+        mode = self.mode_detector.detect(message, self.memory.data, str(self.memory.data.get("intent", "")))
+        self.memory.data["conversation_mode"] = mode.value
+        response = self.response_composer.compose(
+            draft=response,
+            message=message,
+            state=self.memory.data,
+            intent=str(self.memory.data.get("intent", "")),
+            mode=ConversationMode.BOOKING if mode != ConversationMode.RESCUE else mode,
+        )
         self.memory.add_turn("agent", response)
 
         return AgentResponse(
@@ -175,14 +196,21 @@ class BookingAgent:
         booking_id = booking_result["booking_id"]
         name = str(self.memory.data.get("customer_name", ""))
 
+        if booking_result.get("confirmed"):
+            return (
+                f"Perfect{', ' + name if name else ''}. "
+                f"Your booking is confirmed. "
+                f"{participants} {'guest' if str(participants) == '1' else 'guests'} "
+                f"at {location} on {date} at {matched}. "
+                f"Your reference number is {booking_id}. "
+                f"You'll receive a confirmation on the number you've provided. "
+                f"Is there anything else I can help you with?"
+            ), booking_result
         return (
-            f"Perfect{', ' + name if name else ''}. "
-            f"Your booking is confirmed. "
-            f"{participants} {'guest' if str(participants) == '1' else 'guests'} "
-            f"at {location} on {date} at {matched}. "
-            f"Your reference number is {booking_id}. "
-            f"You'll receive a confirmation on the number you've provided. "
-            f"Is there anything else I can help you with?"
+            f"Perfect{', ' + name if name else ''}. I've prepared the booking for "
+            f"{participants} {'guest' if str(participants) == '1' else 'guests'} at {location} "
+            f"on {date} at {matched}. Your checkout reference is {booking_id}. "
+            "The booking will be confirmed after checkout is completed."
         ), booking_result
 
     def _handle_alt_date(self, message: str) -> tuple[str, dict | None]:

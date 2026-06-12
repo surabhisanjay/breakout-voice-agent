@@ -15,6 +15,8 @@ from .qualification_agent import QualificationAgent
 from .recommendation_engine import RecommendationEngine
 from .router import Router, RouteDecision
 from .conversation_intelligence import ConversationIntelligenceLayer
+from .conversation_modes import ConversationModeDetector
+from .response_composer import ResponseComposer
 
 class InboundAgent:
     def __init__(
@@ -57,7 +59,7 @@ class InboundAgent:
 
         # Model defaults:
         if self.use_openai:
-            self.model = model or os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+            self.model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
         else:
             self.model = model or "qwen3:8b"
 
@@ -78,6 +80,12 @@ class InboundAgent:
         self.retriever = KnowledgeRetriever(knowledge_base)
         self.qualification_agent = QualificationAgent(memory)
         self.conversation_intelligence = ConversationIntelligenceLayer(memory)
+        self.mode_detector = ConversationModeDetector()
+        self.response_composer = ResponseComposer(
+            Path(prompt_path).with_name("breakout_personality_prompt.txt"),
+            model=self.model if self.use_openai else os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+            enabled=self.use_openai,
+        )
         self.last_openai_error = ""
         self.last_ollama_error = ""
 
@@ -189,6 +197,9 @@ class InboundAgent:
                 self.memory.data["current_workflow"] = "booking"
                 self.memory.save()
                 response = "Great, let me check that for you right away."
+                response = self._compose_customer_response(
+                    response, normalized_message, intent_result_final.intent
+                )
                 response = self._clean_response(response)
                 self._update_discussed_options(response)
                 self.memory.add_turn("agent", response)
@@ -228,6 +239,9 @@ class InboundAgent:
                 self.memory.data["current_workflow"] = "general"
                 self.memory.save()
                 response = "No problem at all. Feel free to call us when you're ready to book, or I can answer any other questions you might have."
+                response = self._compose_customer_response(
+                    response, normalized_message, intent_result_final.intent
+                )
                 response = self._clean_response(response)
                 self._update_discussed_options(response)
                 self.memory.add_turn("agent", response)
@@ -281,6 +295,10 @@ class InboundAgent:
 
         response = self._clean_response(response)
 
+        response_mode = str(self.memory.data.get("conversation_mode", ""))
+        if response_mode == "faq" and not waiting_before:
+            route = RouteDecision("inbound_agent", "Direct FAQ handled by inbound agent.", False)
+
         # Auto-route budget/pricing queries to booking_agent when user opted-in for booking flow
         handoff = self.handoff_generator.generate(self.memory.data) if handoff_ready else None
         if (
@@ -292,6 +310,7 @@ class InboundAgent:
                 handoff = self.handoff_generator.generate(self.memory.data)
             # Override response to indicate booking is starting
             response = "Okay — I'll start the booking process and check availability. One moment please."
+            response = self._compose_customer_response(response, normalized_message, active_intent)
 
         # If this route hands off to booking, attempt to run the LangGraph booking node
         booking_result = None
@@ -341,7 +360,7 @@ class InboundAgent:
     def _generate_response(self, message: str, intent: str, recommendation, should_handoff: bool, qual_result=None, waiting_before: str = "", core_changed: bool = False) -> str:
         response = self._fallback_response(message, intent, recommendation, should_handoff, qual_result, waiting_before, core_changed=core_changed)
         if response:
-            return response
+            return self._compose_customer_response(response, message, intent)
 
         retrieved_context = self.retriever.search(
             " ".join(
@@ -381,7 +400,34 @@ class InboundAgent:
                 if deterministic:
                     return deterministic
 
-        return "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+        fallback = "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+        return self._compose_customer_response(fallback, message, intent)
+
+    def _compose_customer_response(self, draft: str, message: str, intent: str) -> str:
+        mode = self.mode_detector.detect(message, self.memory.data, intent)
+        self.memory.data["conversation_mode"] = mode.value
+        grounded_context = self.retriever.search(
+            " ".join(
+                filter(
+                    None,
+                    (
+                        message,
+                        intent,
+                        str(self.memory.data.get("location", "")),
+                        str(self.memory.data.get("recommended_option", "")),
+                    ),
+                )
+            ),
+            limit=3,
+        )
+        return self.response_composer.compose(
+            draft=draft,
+            message=message,
+            state=self.memory.data,
+            intent=intent,
+            mode=mode,
+            grounded_context=grounded_context,
+        )
 
 
     def _call_ollama(self, prompt: str) -> str:
@@ -529,6 +575,9 @@ class InboundAgent:
             return "Hi, this is Breakout Escape Rooms. How may I help you today?"
 
         # Check FAQ / direct questions first
+        compound_answer = self._answer_multiple_questions(lowered)
+        if compound_answer:
+            return compound_answer
         faq_answer = self._answer_faq(lowered)
         if faq_answer and (intent == "general_faq" or self._is_direct_question(lowered)):
             return faq_answer
@@ -638,6 +687,30 @@ class InboundAgent:
     def _answer_faq(self, lowered: str) -> str:
         if "is this" in lowered or "breakout" in lowered:
             return "Yes, this is Breakout Escape Rooms. How may I help you today?"
+        if any(term in lowered for term in ("running late", "we are late", "we're late", "will be late", "arrive late")) or re.search(
+            r"\b(?:running|arriving|be)\b.*\blate\b", lowered
+        ):
+            return (
+                "Don't worry, let me help. The game starts at the scheduled time because sessions run back to back, "
+                "so arriving late reduces the time available inside the room. How late do you expect to be?"
+            )
+        if any(
+            term in lowered
+            for term in (
+                "don't escape", "do not escape", "cannot escape", "can't escape",
+                "not escape", "fail to escape", "actually locked", "locked inside",
+            )
+        ):
+            return (
+                "Don't worry, we won't keep you locked forever. Players are not actually locked in, and our team "
+                "monitors the game and can assist when needed. Would you like a quick idea of how the experience works?"
+            )
+        if any(term in lowered for term in ("briefing", "game rules", "rules before", "before the game")):
+            return (
+                "Absolutely. The team will brief you before the game, and staff monitor the experience and assist if needed. "
+                "The game itself runs for around 50 minutes, so please arrive 20 minutes before your slot. "
+                "Is there a particular part of the briefing you wanted to check?"
+            )
         # Case 5: "Which of Murder Mystery or Hostage do you suggest/recommend"
         if ("suggest" in lowered or "recommend" in lowered or "lean" in lowered) and "murder mystery" in lowered and "hostage" in lowered:
             return (
@@ -712,7 +785,8 @@ class InboundAgent:
             return (
                 "No problem at all! We love hosting first-time players. I'd usually recommend starting with "
                 "Murder Mystery because it gives you investigation-style puzzles and teamwork without feeling "
-                "overwhelming. If you want something slightly more exciting, Hostage is a great alternative."
+                "overwhelming. If you want something slightly more exciting, Hostage is a great alternative. "
+                "How many people will be joining?"
             )
 
         if "whitefield" in lowered and ("visiting" in lowered or "coming" in lowered):
@@ -744,7 +818,11 @@ class InboundAgent:
                 "experiences and family groups often enjoy it. Which date were you thinking of visiting?"
             )
 
-        if "children" in lowered or "kids" in lowered:
+        recommendation_request = any(
+            term in lowered
+            for term in ("recommend", "suggest", "which room", "best room", "what should")
+        )
+        if ("children" in lowered or "kids" in lowered) and not recommendation_request:
             return "Yes. Kid-only and kid-friendly games are available with staff supervision."
         if "parking" in lowered or "park" in lowered:
             return "Koramangala has basement and street parking, Whitefield has basement car parking with dedicated car spots and general parking, and JP Nagar has street parking."
@@ -757,6 +835,31 @@ class InboundAgent:
         if "advance booking" in lowered or "booking required" in lowered:
             return "Yes. All bookings are done online."
         return ""
+
+    def _answer_multiple_questions(self, lowered: str) -> str:
+        topics: list[str] = []
+        if "location" in lowered or "where are you" in lowered:
+            topics.append("locations")
+        if "food" in lowered:
+            topics.append("food")
+        if "parking" in lowered or re.search(r"\bpark\b", lowered):
+            topics.append("parking")
+        if "how long" in lowered or "duration" in lowered:
+            topics.append("duration")
+        if "cancel" in lowered or "refund" in lowered:
+            topics.append("cancellation")
+        if len(set(topics)) < 2:
+            return ""
+
+        answers = {
+            "locations": "Breakout has locations in Koramangala, Whitefield, and JP Nagar.",
+            "food": "Food options include continental food, build-your-menu options, mix snack boxes, hi-tea options, and Indian buffet options for corporate events.",
+            "parking": "Koramangala has basement and street parking, Whitefield has basement car parking with dedicated spots and general parking, and JP Nagar has street parking.",
+            "duration": "Each game runs for around 50 minutes, and players should arrive 20 minutes before the slot time.",
+            "cancellation": "Cancellation charges depend on how far in advance the cancellation is made, and the appropriate team handles cancellation or refund requests.",
+        }
+        ordered_topics = list(dict.fromkeys(topics))
+        return "Sure. " + " ".join(answers[topic] for topic in ordered_topics)
 
     def _answer_room_name(self, lowered: str) -> str:
         import difflib
@@ -928,7 +1031,7 @@ class InboundAgent:
                 return "Absolutely. Corporate events can include Escape Rooms, Let Loose, Detective Job, Scavenger Hunt Activity, and The Unwind Challenge. How many employees are you planning for?"
  
         if intent == "couple_event":
-            return "A lot of couples choose Murder Mystery because it is focused on teamwork, clue solving, and the story. If you want something more intense, Prison Break or Undercover can add more challenge. Are you looking for something relaxed or more challenging?"
+            return "A lot of couples choose Murder Mystery because it is focused on teamwork, clue solving, and the story. If you want something with more urgency, Hostage is a good alternative. Are you looking for something relaxed or more challenging?"
  
         if intent == "escape_room_inquiry":
             if self._is_beginner_context(lowered):
@@ -940,8 +1043,8 @@ class InboundAgent:
                     flow_missing = self._get_flow_missing(intent, lowered)
                     follow = "Which location are you planning to visit?"
                     if "age_group" in flow_missing and (waiting_before == "age_group" or flow_missing[0] == "age_group"):
-                        follow = "What age group are the players?"
-                    return f"If it's your first escape room, I'd usually recommend Murder Mystery. It gives you investigation-style puzzles and teamwork without feeling too heavy. If you'd like something slightly more exciting, Hostage is another good option. {follow}"
+                        follow = "Are the players mostly adults, kids, or a mix?"
+                    return f"That sounds like a fun group. For {participants} first-time players, I'd start with Murder Mystery. It gives you investigation-style puzzles and teamwork without feeling overwhelming. If you'd like something slightly more exciting, Hostage is another good option. {follow}"
                 return "If it's your first escape room, I'd usually recommend Murder Mystery. It gives you investigation-style puzzles and teamwork without feeling too heavy. If you'd like something slightly more exciting, Hostage is another good option. How many people will be joining?"
             if recommendation.option:
                 is_asking_rec = any(kw in lowered for kw in ("recommend", "suggest", "popular", "most popular", "what games", "what rooms", "which room"))
@@ -1029,10 +1132,29 @@ class InboundAgent:
         participants = self.memory.data.get("participants")
         location = str(self.memory.data.get("location", ""))
         challenge_preference = str(self.memory.data.get("challenge_preference", "")).lower()
+        age_detail = str(self.memory.data.get("age_detail", ""))
 
-        group_phrase = f"For a group of {participants} teens" if participants else "For teens"
+        age_match = re.search(r"\d+(?:-\d+)?", age_detail)
+        if participants and age_match:
+            group_phrase = f"For {participants} players aged {age_match.group(0)}"
+        elif participants:
+            group_phrase = f"For a group of {participants} teens"
+        else:
+            group_phrase = "For teens"
         if location:
             group_phrase += f" visiting {location}"
+
+        if age_match and int(age_match.group(0).split("-")[-1]) <= 13:
+            follow_up = (
+                "Would you like me to compare those two?"
+                if location
+                else "Which location are you planning to visit?"
+            )
+            return (
+                f"{group_phrase}, I'd start with Murder Mystery. It focuses on investigation and clue solving, "
+                f"which gives the group plenty to work through together. Hostage is the more urgent rescue-style "
+                f"alternative. {follow_up}"
+            )
 
         if challenge_preference == "challenging":
             if location.lower() == "whitefield":
@@ -1198,7 +1320,8 @@ class InboundAgent:
         beginner_terms = (
             "never done", "first time", "first-time", "beginner", "no experience",
             "never tried", "none of us have done", "haven't done", "havent done",
-            "first timer", "first-timer", "never played", "new to escape"
+            "first timer", "first-timer", "never played", "none of us have played",
+            "none of us has played", "new to escape"
         )
         return any(term in lowered for term in beginner_terms)
 

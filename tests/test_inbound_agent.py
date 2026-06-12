@@ -1438,7 +1438,49 @@ def test_case_1_seven_friends_first_time(tmp_path: Path) -> None:
     assert "Murder Mystery" in r3
     assert "Hostage" in r3
     # Check that it resumes qualification
-    assert "age group" in r3.lower()
+    assert "adults, kids, or a mix" in r3.lower()
+
+
+def test_first_time_friends_receive_recommendation_before_qualification(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    response = agent.handle_message("We are 7 friends and none of us have played before.")["response"]
+
+    assert agent.memory.data["participants"] == 7
+    assert agent.memory.data["experience_level"] == "beginner"
+    assert response.index("Murder Mystery") < response.index("adults, kids, or a mix")
+    assert "Hostage" in response
+
+
+def test_late_customer_gets_rescue_response(tmp_path: Path) -> None:
+    response = make_agent(tmp_path).handle_message("We are running late.")["response"]
+    assert "Don't worry" in response
+    assert "back to back" in response
+    assert "How late" in response
+
+
+def test_customer_is_reassured_if_they_do_not_escape(tmp_path: Path) -> None:
+    response = make_agent(tmp_path).handle_message("What happens if we don't escape?")["response"]
+    assert "won't keep you locked forever" in response
+    assert "not actually locked" in response
+    assert "monitors" in response
+
+
+def test_family_recommendation_is_not_intercepted_by_children_faq(tmp_path: Path) -> None:
+    response = make_agent(tmp_path).handle_message(
+        "We have 5 children aged 11. What would you recommend?"
+    )["response"]
+    assert "Murder Mystery" in response
+    assert "Hostage" in response
+    assert "5 players aged 11" in response
+    assert "Classified" not in response
+    assert "Bomb Defusal" not in response
+
+
+def test_escape_room_briefing_answer_is_grounded(tmp_path: Path) -> None:
+    response = make_agent(tmp_path).handle_message("Can you explain the briefing before the game?")["response"]
+    assert "brief" in response.lower()
+    assert "50 minutes" in response
+    assert "20 minutes before" in response
 
 
 def test_case_2_kids_and_adults_location_recommendation(tmp_path: Path) -> None:

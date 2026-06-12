@@ -45,26 +45,26 @@ class ConversationManager:
         if detected_intent == "birthday_party" or any(kw in lowered for kw in birthday_keywords):
             return "inbound_agent", "new_birthday"
 
-        # 3. Check for New Escape Room Inquiry (Category 7)
-        escape_room_keywords = {"escape room", "room suggestion", "room recommendation", "which room", "hardest room", "puzzles", "none of us have done", "beginner", "experienced"}
-        if detected_intent == "escape_room_inquiry" or any(kw in lowered for kw in escape_room_keywords):
-            return "inbound_agent", "new_escape_room"
-
-        # 4. Check for New Booking Request (Category 4)
-        booking_keywords = {"visiting", "players", "participants", "people", "group of", "want to book", "book a", "bachelor", "stag", "farewell", "couple"}
-        other_inquiry_intents = {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}
-        if detected_intent in other_inquiry_intents or any(kw in lowered for kw in booking_keywords):
-            return "inbound_agent", "new_booking"
-
-        # 5. Check for Recommendation Request (Category 3)
+        # 3. Explicit recommendation requests preempt active workflows.
         recommend_keywords = {"recommend", "suggest", "better for", "recommendation", "which one", "which rooms"}
         if any(kw in lowered for kw in recommend_keywords):
             return "inbound_agent", "recommendation"
 
-        # 6. Check for Question / FAQ (Category 2)
+        # 4. Explicit practical questions preempt active workflows.
         faq_keywords = {"parking", "location", "locations", "where", "how long", "duration", "is this", "what is", "walk in", "cost", "price", "toilet", "food", "available", "rooms are available"}
         if (detected_intent == "general_faq" and intent_res.confidence > 0.5) or "?" in lowered or any(kw in lowered for kw in faq_keywords):
             return "inbound_agent", "faq"
+
+        # 5. Check for New Escape Room Inquiry (Category 7)
+        escape_room_keywords = {"escape room", "room suggestion", "room recommendation", "which room", "hardest room", "puzzles", "none of us have done", "beginner", "experienced"}
+        if detected_intent == "escape_room_inquiry" or any(kw in lowered for kw in escape_room_keywords):
+            return "inbound_agent", "new_escape_room"
+
+        # 6. Check for New Booking Request (Category 4)
+        booking_keywords = {"visiting", "players", "participants", "people", "group of", "want to book", "book a", "bachelor", "stag", "farewell", "couple"}
+        other_inquiry_intents = {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}
+        if detected_intent in other_inquiry_intents or any(kw in lowered for kw in booking_keywords):
+            return "inbound_agent", "new_booking"
 
         # 7. Check if this is continuing the booking workflow (Category 1)
         # Booking workflow only applies if booking agent is currently active

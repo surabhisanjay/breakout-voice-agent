@@ -30,9 +30,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# Local imports — adjust paths as needed
-from intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification   # type: ignore
-from slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS                 # type: ignore
+try:
+    from .intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification
+    from .slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS
+except ImportError:  # Support direct execution from the src directory.
+    from intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification  # type: ignore
+    from slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS  # type: ignore
 
 
 # ---------------------------------------------------------------------------

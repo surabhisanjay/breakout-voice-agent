@@ -12,7 +12,7 @@ Replace the body of `check()` with an HTTP call to the booking API,
 e.g.:
     import httpx
     response = httpx.get(
-        "https://api.breakout.in/v1/availability",
+        f"{self.base_url}/v1/availability",
         params={"location": location, "date": date, "participants": participants},
         headers={"Authorization": f"Bearer {API_KEY}"},
         timeout=10,
@@ -22,6 +22,11 @@ e.g.:
 No other files need to change — the interface is fixed.
 """
 from __future__ import annotations
+
+import os
+
+
+DEFAULT_BOOKING_BASE_URL = "https://bs.kreeda.icu"
 
 
 class AvailabilityTool:
@@ -46,6 +51,10 @@ class AvailabilityTool:
     }
 
     _DEFAULT_SLOTS = ["10:00 AM", "12:00 PM", "3:00 PM"]
+
+    def __init__(self, base_url: str | None = None, api_key: str | None = None) -> None:
+        self.base_url = (base_url or os.environ.get("BOOKING_BASE_URL") or DEFAULT_BOOKING_BASE_URL).rstrip("/")
+        self.api_key = api_key if api_key is not None else os.environ.get("BOOKING_API_KEY", "")
 
     def check(self, location: str, date: str, participants: int) -> dict:
         """
