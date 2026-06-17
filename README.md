@@ -328,6 +328,46 @@ Routing is handled by `src/router.py`:
 
 The router avoids handoff until most required intake fields are collected.
 
+## FastAPI Adapter
+
+The HTTP API is a thin wrapper around the existing conversation system. Terminal and voice modes in `main.py` continue to work unchanged.
+
+Start the API locally:
+
+```bash
+uvicorn app:app --reload
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Chat request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"demo-1","message":"We are six adults visiting Whitefield."}'
+```
+
+Reset a session:
+
+```bash
+curl -X POST http://127.0.0.1:8000/reset \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"demo-1"}'
+```
+
+Optional memory inspection:
+
+```bash
+curl http://127.0.0.1:8000/memory/demo-1
+```
+
+Each `session_id` gets its own persisted memory file under `memory/api_sessions/`.
+
 ## Notes for Production Hardening
 
 - Replace regex extraction with validated forms or a local NLU model if needed.
