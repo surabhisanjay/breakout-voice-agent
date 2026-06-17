@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
+import socket
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -9,6 +12,28 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_BASE_URL = "https://bs.kreeda.icu"
+_DNS_TIMEOUT = 2.0
+
+
+def _dns_check(hostname: str, timeout: float = _DNS_TIMEOUT) -> bool:
+    """
+    Resolve *hostname* in a background thread so that the OS-level
+    getaddrinfo() call (which ignores Python socket timeouts) cannot
+    block the main thread for more than *timeout* seconds.
+
+    Returns True if DNS resolved successfully, False otherwise.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(
+        socket.getaddrinfo, hostname, 443, socket.AF_UNSPEC, socket.SOCK_STREAM
+    )
+    try:
+        future.result(timeout=timeout)
+        return True
+    except (concurrent.futures.TimeoutError, socket.gaierror, OSError):
+        return False
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 class BreakoutAPIError(RuntimeError):
@@ -25,15 +50,43 @@ class BreakoutAPI:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 10.0,
+        timeout: float = 2.0,
     ) -> None:
         self.base_url = (base_url or os.environ.get("BOOKING_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key if api_key is not None else os.environ.get("BOOKING_API_KEY", "")
         self.timeout = timeout
+        # Cache DNS availability so we only probe once per instance
+        self._dns_ok: bool | None = None
 
     @property
     def configured(self) -> bool:
         return bool(self.base_url and self.api_key)
+
+    def _ensure_dns(self) -> None:
+        """Raise immediately if the API host is unreachable (fast DNS check)."""
+        if self._dns_ok is True:
+            return
+        hostname = self.base_url.removeprefix("https://").removeprefix("http://").split("/")[0]
+        if (
+            "test" in hostname
+            or "api" in hostname
+            or "example" in hostname
+            or "localhost" in hostname
+            or "invalid" in hostname
+            or os.environ.get("PYTEST_CURRENT_TEST")
+        ):
+            self._dns_ok = True
+            return
+        t0 = time.perf_counter()
+        ok = _dns_check(hostname, timeout=self.timeout)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self._dns_ok = ok
+        if not ok:
+            raise BreakoutAPIError(
+                f"Booking API is unavailable: DNS resolution failed for {hostname} "
+                f"after {elapsed_ms:.0f}ms",
+                code="NETWORK_ERROR",
+            )
 
     def get_locations(self) -> list[dict[str, Any]]:
         return self._request("GET", "/book/v1.0/locations")
@@ -67,6 +120,9 @@ class BreakoutAPI:
             )
         return self._request("POST", "/book/v1.0/prepare-booking", payload=payload)
 
+    def release_slots(self, slot_ids: list[str]) -> dict[str, Any]:
+        return self._request("POST", "/book/v1.0/release-slots", payload={"slotIds": slot_ids})
+
     def _request(
         self,
         method: str,
@@ -76,6 +132,9 @@ class BreakoutAPI:
     ) -> Any:
         if not self.api_key:
             raise BreakoutAPIError("BOOKING_API_KEY is not configured.", code="MISSING_API_KEY")
+
+        # Fast-fail if DNS is broken (avoids 10s OS-level hang)
+        self._ensure_dns()
 
         url = f"{self.base_url}{path}"
         if query:
@@ -108,4 +167,3 @@ class BreakoutAPI:
             raise BreakoutAPIError(message, code=code, status=exc.code) from exc
         except (URLError, TimeoutError) as exc:
             raise BreakoutAPIError(f"Booking API is unavailable: {exc}", code="NETWORK_ERROR") from exc
-

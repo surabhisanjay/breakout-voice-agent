@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .conversation_memory import ConversationMemory
+from ..memory.conversation_memory import ConversationMemory
 
 
 @dataclass(frozen=True)
@@ -48,27 +48,29 @@ class QualificationAgent:
     }
 
     QUESTIONS = {
-        "event_type": "Sure. What type of event are you planning?",
-        "participants": "How many people will attend?",
-        "location": "Which location would you prefer: Koramangala, Whitefield, or JP Nagar?",
-        "preferred_date": "What date are you planning for?",
-        "age_group": "What is the age group of the players?",
-        "food_required": "Would you require food and beverages?",
-        "budget_range": "What budget range are you considering? We have Basic, Standard, and Premium options.",
-        "customer_name": "May I have your name?",
-        "phone": "Could I have your phone number so the team can share the details?",
+        "event_type": "Sure. What kind of event are you planning?",
+        "participants": "Got it. How many people are joining?",
+        "location": "Nice. Which location works best: Koramangala, Whitefield, or JP Nagar?",
+        "preferred_date": "Got it. What date are you planning for?",
+        "age_group": "Perfect. What's the age group: adults, kids, or a mix?",
+        "food_required": "Sounds good. Do you need food and beverages as well?",
+        "budget_range": "Got it. What's the budget range: Basic, Standard, or Premium?",
+        "customer_name": "Perfect. What's your name?",
+        "phone": "Thanks. What's the best phone number for the booking details?",
+        "email": "Perfect. What's your email address?",
     }
 
     # Warm acknowledgment spoken before the next question
     _ACK_PREFIXES: dict[str, str] = {
         "location": "Perfect.",
-        "preferred_date": "Great.",
+        "preferred_date": "Nice.",
         "customer_name": "",          # filled dynamically using the name
-        "phone": "Thank you.",
-        "food_required": "Noted.",
-        "budget_range": "Got it.",
-        "participants": "Got it.",
+        "phone": "Perfect.",
+        "food_required": "Got it.",
+        "budget_range": "Sounds good.",
+        "participants": "Nice.",
         "age_group": "Perfect.",
+        "email": "Got it.",
     }
 
     def __init__(self, memory: ConversationMemory):
@@ -76,6 +78,11 @@ class QualificationAgent:
         # Tracks which field we explicitly asked for on the previous turn.
         # Validation only applies when _waiting_for matches the expected field.
         self._waiting_for: str = ""
+
+    def next_missing_field(self, intent: str) -> str:
+        required = self.REQUIRED_BY_INTENT.get(intent, [])
+        missing = [field for field in required if not self._has_value(field)]
+        return missing[0] if missing else ""
 
     def qualify(self, intent: str | None = None) -> QualificationResult:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
@@ -103,8 +110,8 @@ class QualificationAgent:
         # Capture the field value explicitly
         self._capture_expected_field(message, expected, active_intent)
         # Also run generic memory extraction (location, participants, etc.)
-        self.memory.update_from_message(message, active_intent)
-        self._capture_bare_count(message, active_intent)
+        self.memory.update_from_message(message, active_intent, expected_field=expected)
+        self._capture_bare_count(message, active_intent, expected)
 
         # Re-evaluate
         after = self.qualify(active_intent)
@@ -174,49 +181,45 @@ class QualificationAgent:
         if expected == "preferred_date":
             preferred_date = self.memory._extract_preferred_date(normalized)
             if preferred_date:
-                self.memory.data["preferred_date"] = preferred_date
-                self.memory.save()
+                self.memory.set_field("preferred_date", preferred_date, message, expected)
 
         elif expected == "food_required":
             food_required = self.memory._extract_food_required(lowered)
             if food_required != "":
-                self.memory.data["food_required"] = food_required
-                self.memory.save()
+                self.memory.set_field("food_required", food_required, message, expected)
 
         elif expected == "budget_range":
             canonical = self._extract_budget_canonical(normalized)
             if canonical:
-                self.memory.data["budget_range"] = canonical
-                self.memory.save()
+                self.memory.set_field("budget_range", canonical, message, expected)
 
         elif expected == "participants":
-            self._capture_bare_count(normalized, intent)
+            self._capture_bare_count(normalized, intent, expected)
 
         elif expected == "location":
-            # Use full fuzzy extraction (exact + difflib + hard-coded table)
             location = self.memory._extract_location(lowered)
             if location:
-                self.memory.data["location"] = location
-                self.memory.save()
+                self.memory.set_field("location", location, message, expected)
         elif expected == "age_group":
             age_group, age_detail = self.memory._extract_age_group(lowered)
 
             if age_group:
-                self.memory.data["age_group"] = age_group
+                self.memory.set_field("age_group", age_group, message, expected)
                 if age_detail:
-                    self.memory.data["age_detail"] = age_detail
-                self.memory.save()
+                    self.memory.set_field("age_detail", age_detail, message, expected)
         elif expected == "customer_name":
             name = self._extract_bare_name(message)
             if name:
-                self.memory.data["customer_name"] = name
-                self.memory.save()
+                self.memory.set_field("customer_name", name, message, expected)
 
         elif expected == "phone":
             phone = self.memory._extract_phone(normalized)
             if phone:
-                self.memory.data["phone"] = phone
-                self.memory.save()
+                self.memory.set_field("phone", phone, message, expected)
+        elif expected == "email":
+            email = self.memory._extract_email(normalized)
+            if email:
+                self.memory.set_field("email", email, message, expected)
 
 
     # ------------------------------------------------------------------ #
@@ -274,6 +277,13 @@ class QualificationAgent:
                 return "Sorry, I didn't catch the phone number. Could you repeat it, like 9876543210?"
             return ""
 
+        if expected == "email":
+            if not self.memory._extract_email(normalized):
+                if self._is_garbage_transcript(lowered):
+                    return "Sorry, I didn't catch that. Could you repeat it?"
+                return "Sorry, I didn't catch the email address. Could you say it again?"
+            return ""
+
         if self._is_garbage_transcript(lowered):
             return "Sorry, I didn't catch that. Could you repeat it?"
         return ""
@@ -282,7 +292,7 @@ class QualificationAgent:
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
 
-    def _capture_bare_count(self, message: str, intent: str) -> None:
+    def _capture_bare_count(self, message: str, intent: str, expected_field: str = "") -> None:
         normalized = self.memory.normalize_number_words(message).strip()
         match = re.search(
             r"\b(?:around|about|approximately|approx|roughly|maybe)?\s*(\d{1,5})\b",
@@ -293,11 +303,22 @@ class QualificationAgent:
             return
 
         count = int(match.group(1))
-        if intent == "corporate_event" and not self.memory.data.get("company_size"):
-            self.memory.data["company_size"] = count
-        if not self.memory.data.get("participants"):
-            self.memory.data["participants"] = count
-        self.memory.save()
+        
+        # Avoid capturing date days (e.g. "18 June") as participant counts
+        if expected_field == "preferred_date" or self.memory._extract_preferred_date(message):
+            return
+
+        participants_set = bool(self.memory.data.get("participants"))
+        company_size_set = bool(self.memory.data.get("company_size"))
+        
+        lowered = message.lower()
+        has_change = any(ind in lowered for ind in ["now", "instead", "change", "update", "switch", "actually", "modify", "correct"])
+
+        if intent == "corporate_event":
+            if not company_size_set or expected_field == "company_size" or has_change:
+                self.memory.set_field("company_size", count, message, expected_field)
+        if not participants_set or expected_field == "participants" or has_change:
+            self.memory.set_field("participants", count, message, expected_field)
 
     @staticmethod
     def _extract_bare_name(message: str) -> str:
@@ -325,6 +346,9 @@ class QualificationAgent:
             "yes", "no", "okay", "ok", "sure", "hi", "hello", "hey",
             "thanks", "thank", "great", "perfect", "good", "please", "sorry",
             "we", "i", "me", "my", "your", "the", "and", "see", "you", "then",
+            "challenging", "chllangeing", "challenge", "relaxed", "adults", "kids", "hostage",
+            "murder", "mystery", "classified", "bomb", "defusal", "prison", "break", "undercover",
+            "escape", "room", "rooms", "game", "games"
         }
         clean = re.sub(r"[^a-zA-Z\s]", "", text).strip()
         words = clean.split()
@@ -345,7 +369,7 @@ class QualificationAgent:
                 message.strip().lower(),
             )
             or re.search(
-                r"\b\d{1,5}\s*(people|persons|guests|kids|children|adults|participants|players|members)\b",
+                r"\b\d{1,5}\s*(people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues)\b",
                 message.lower(),
             )
         )
@@ -429,12 +453,33 @@ class QualificationAgent:
     def _has_value(self, field: str) -> bool:
         if field == "participants" and self.memory.data.get("company_size"):
             return True
-        return bool(self.memory.data.get(field))
+        val = self.memory.data.get(field)
+        if val is False:
+            return True
+        return bool(val)
 
     def _summary(self, qualified: bool) -> dict[str, Any]:
         data = self.memory.data
         participants = data.get("participants") or data.get("company_size") or ""
         event_type = str(data.get("event_type", ""))
+        normalized_event_type = (
+            event_type.lower()
+            .replace(" event", "")
+            .replace(" party", "")
+            .replace(" ", "_")
+        )
+        return {
+            "qualified": qualified,
+            "event_type": normalized_event_type,
+            "participants": participants,
+            "location": data.get("location", ""),
+            "preferred_date": data.get("preferred_date", ""),
+            "age_group": data.get("age_group", ""),
+            "food_required": data.get("food_required", ""),
+            "budget_range": data.get("budget_range", ""),
+            "customer_name": data.get("customer_name", ""),
+            "phone": data.get("phone", ""),
+        }
         normalized_event_type = (
             event_type.lower()
             .replace(" event", "")

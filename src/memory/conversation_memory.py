@@ -10,6 +10,7 @@ from typing import Any
 DEFAULT_MEMORY = {
     "customer_name": "",
     "phone": "",
+    "email": "",
     "location": "",
     "participants": "",
     "age_group": "",
@@ -34,8 +35,12 @@ DEFAULT_MEMORY = {
     "booking_consent_pending": False,
     "conversation": [],
     "discussed_options": [],
+    "last_discussed_topic": "",
+    "pending_policy_explanation": False,
     "customer_preferences": [],
     "concerns": [],
+    "pending_confirmation": None,
+    "audit_trail": [],
 }
 
 
@@ -52,7 +57,7 @@ class ConversationMemory:
         "cancellation_request": ["customer_name", "phone"],
         "general_faq": [],
     }
-    CONTACT_FIELDS = ["customer_name", "phone"]
+    CONTACT_FIELDS = ["customer_name", "phone", "email"]
 
     EVENT_BY_INTENT = {
         "escape_room_inquiry": "Escape Room",
@@ -83,7 +88,7 @@ class ConversationMemory:
         merged.update(loaded)
         if not isinstance(merged.get("conversation"), list):
             merged["conversation"] = []
-        for key in ["discussed_options", "customer_preferences", "concerns"]:
+        for key in ["discussed_options", "customer_preferences", "concerns", "audit_trail"]:
             if not isinstance(merged.get(key), list):
                 merged[key] = []
         return merged
@@ -114,92 +119,170 @@ class ConversationMemory:
             self.data[field] = DEFAULT_MEMORY[field]
         self.save()
 
-    def update_from_message(self, message: str, intent: str, recommendation: str = "") -> None:
-        self.merge_message(message, intent, recommendation)
+    def set_field(self, field: str, new_value: Any, message: str = "", expected_field: str = "") -> bool:
+        """
+        Safely update a memory field, determining if it is:
+        - "new" (field was empty)
+        - "modification" (field had value, message contains explicit change triggers)
+        - "correction" (field had value, message does not have triggers - requires confirmation if confidence low)
+        Returns True if the update was accepted/applied, False if it was deferred for confirmation.
+        """
+        old_value = self.data.get(field, "")
+        
+        # Normalize types for comparison
+        str_old = str(old_value).strip().lower()
+        str_new = str(new_value).strip().lower()
+        
+        if str_new == "" or str_new == str_old:
+            return False
+            
+        if old_value == "":
+            update_type = "new"
+        else:
+            lowered_msg = message.lower()
+            change_indicators = ["instead", "now", "actually", "change", "switch", "update", "correct", "rather", "prefer", "want to do", "different", "can we do", "i want", "reschedule", "modify", "meant", "no", "not", "incorrect", "wrong", "typo", "mistake"]
+            intent_changed = getattr(self, "_intent_changing", False)
+            is_explicit_change = (
+                intent_changed or
+                any(indicator in lowered_msg for indicator in change_indicators) or
+                len(lowered_msg.split()) <= 2
+            )
+            
+            if is_explicit_change:
+                # High-confidence update (explicit correction or modification)
+                if any(kw in lowered_msg for kw in ["instead", "now", "change", "switch", "update", "reschedule", "modify", "different"]):
+                    update_type = "modification"
+                else:
+                    update_type = "correction"
+            else:
+                # Low-confidence correction/contradiction
+                update_type = "correction"
+                
+                # Defer location/room/participants/date/age_group changes that are not explicit
+                if field in ["location", "room", "participants", "preferred_date", "age_group"] and field != expected_field:
+                    self.data["pending_confirmation"] = {
+                        "field": field,
+                        "old_value": old_value,
+                        "new_value": new_value,
+                        "type": update_type
+                    }
+                    self.save()
+                    return False
 
-    def merge_message(self, message: str, intent: str, recommendation: str = "") -> dict[str, Any]:
+        # Apply update
+        self.data[field] = new_value
+        if field == "participants" and self.data.get("intent") == "corporate_event":
+            self.data["company_size"] = new_value
+        elif field == "company_size":
+            self.data["participants"] = new_value
+        
+        # Log to audit trail
+        if "audit_trail" not in self.data or not isinstance(self.data["audit_trail"], list):
+            self.data["audit_trail"] = []
+            
+        self.data["audit_trail"].append({
+            "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
+            "type": update_type
+        })
+        self.save()
+        return True
+
+    def update_from_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> None:
+        self.merge_message(message, intent, recommendation, expected_field)
+
+    def merge_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> dict[str, Any]:
+        self._intent_changing = bool(intent and intent != self.data.get("intent", ""))
         text = self.normalize_number_words(message.strip())
         lowered = text.lower()
         extracted: dict[str, Any] = {}
 
         if intent:
-            self.data["intent"] = intent
-            extracted["intent"] = intent
+            if self.set_field("intent", intent, message, expected_field):
+                extracted["intent"] = intent
             event_type = self.EVENT_BY_INTENT.get(intent, "")
             if event_type:
-                self.data["event_type"] = event_type
-                extracted["event_type"] = event_type
+                if self.set_field("event_type", event_type, message, expected_field):
+                    extracted["event_type"] = event_type
 
         if recommendation:
-            self.data["recommended_option"] = recommendation
-            extracted["recommended_option"] = recommendation
+            if self.set_field("recommended_option", recommendation, message, expected_field):
+                extracted["recommended_option"] = recommendation
 
         name = self._extract_name(text)
         if name:
-            self.data["customer_name"] = name
-            extracted["customer_name"] = name
+            if self.set_field("customer_name", name, message, expected_field):
+                extracted["customer_name"] = name
 
         phone = self._extract_phone(text)
         if phone:
-            self.data["phone"] = phone
-            extracted["phone"] = phone
+            if self.set_field("phone", phone, message, expected_field):
+                extracted["phone"] = phone
+
+        email = self._extract_email(text)
+        if email:
+            if self.set_field("email", email, message, expected_field):
+                extracted["email"] = email
 
         location = self._extract_location(lowered)
         if location:
-            self.data["location"] = location
-            extracted["location"] = location
+            if self.set_field("location", location, message, expected_field):
+                extracted["location"] = location
 
         room = self._extract_room(lowered)
         if room:
-            self.data["room"] = room
-            extracted["room"] = room
+            if self.set_field("room", room, message, expected_field):
+                extracted["room"] = room
 
         participants = self._extract_participants(lowered)
         if participants:
-            self.data["participants"] = participants
-            extracted["participants"] = participants
+            if self.set_field("participants", participants, message, expected_field):
+                extracted["participants"] = participants
 
         age_group, age_detail = self._extract_age_group(lowered)
         if age_group:
-            self.data["age_group"] = age_group
-            extracted["age_group"] = age_group
+            if self.set_field("age_group", age_group, message, expected_field):
+                extracted["age_group"] = age_group
         if age_detail:
-            self.data["age_detail"] = age_detail
-            extracted["age_detail"] = age_detail
+            if self.set_field("age_detail", age_detail, message, expected_field):
+                extracted["age_detail"] = age_detail
 
         experience_level = self._extract_experience_level(lowered)
         if experience_level:
-            self.data["experience_level"] = experience_level
-            extracted["experience_level"] = experience_level
+            if self.set_field("experience_level", experience_level, message, expected_field):
+                extracted["experience_level"] = experience_level
 
         challenge_preference = self._extract_challenge_preference(lowered)
         if challenge_preference:
-            self.data["challenge_preference"] = challenge_preference
-            extracted["challenge_preference"] = challenge_preference
+            if self.set_field("challenge_preference", challenge_preference, message, expected_field):
+                extracted["challenge_preference"] = challenge_preference
 
         company_size = self._extract_company_size(lowered)
         if company_size:
-            self.data["company_size"] = company_size
-            extracted["company_size"] = company_size
+            if self.set_field("company_size", company_size, message, expected_field):
+                extracted["company_size"] = company_size
 
         preferred_date = self._extract_preferred_date(text)
         if preferred_date:
-            self.data["preferred_date"] = preferred_date
-            extracted["preferred_date"] = preferred_date
+            if self.set_field("preferred_date", preferred_date, message, expected_field):
+                extracted["preferred_date"] = preferred_date
 
         food_required = self._extract_food_required(lowered)
-        if food_required:
-            self.data["food_required"] = food_required
-            extracted["food_required"] = food_required
+        if food_required != "":
+            if self.set_field("food_required", food_required, message, expected_field):
+                extracted["food_required"] = food_required
 
         budget_range = self._extract_budget_range(text)
         if budget_range:
-            self.data["budget_range"] = budget_range
-            extracted["budget_range"] = budget_range
+            if self.set_field("budget_range", budget_range, message, expected_field):
+                extracted["budget_range"] = budget_range
 
         self.data["sentiment"] = self._detect_sentiment(lowered)
         extracted["sentiment"] = self.data["sentiment"]
         self.save()
+        if hasattr(self, "_intent_changing"):
+            del self._intent_changing
         return extracted
 
     def add_turn(self, role: str, content: str) -> None:
@@ -212,7 +295,7 @@ class ConversationMemory:
         required = list(self.FLOW_FIELDS.get(active_intent, []))
         if include_contact and active_intent not in ("", "general_faq"):
             required.extend(field for field in self.CONTACT_FIELDS if field not in required)
-        return [field for field in required if not self.data.get(field)]
+        return [field for field in required if self.data.get(field) is not False and not self.data.get(field)]
 
     def flow_complete(self, intent: str | None = None) -> bool:
         return not self.missing_fields(intent=intent, include_contact=False)
@@ -224,7 +307,29 @@ class ConversationMemory:
         if active_intent == "escape_room_inquiry":
             if not self.data.get("preferred_date") or not self.data.get("recommended_option"):
                 return False
-        return not self.missing_fields(intent=active_intent, include_contact=True)
+        
+        from ..agents.qualification_agent import QualificationAgent
+        required = list(QualificationAgent.REQUIRED_BY_INTENT.get(active_intent, []))
+        
+        # Customer name and phone are always required for handoff to check booking
+        for field in ["customer_name", "phone"]:
+            if field not in required:
+                required.append(field)
+                
+        for field in required:
+            if field == "event_type":
+                continue
+            if not self.data.get(field) and not (field == "participants" and self.data.get("company_size")):
+                return False
+        return True
+
+    def booking_ready(self) -> bool:
+        required = ("age_group", "location", "preferred_date", "customer_name", "phone")
+        return bool(
+            (self.data.get("participants") or self.data.get("company_size"))
+            and all(self.data.get(field) for field in required)
+        )
+
 
     def as_prompt_context(self) -> str:
         fields = {key: value for key, value in self.data.items() if key != "conversation"}
@@ -308,6 +413,11 @@ class ConversationMemory:
         match = re.search(r"(?:(?:\+91[\s-]?)|0)?([6-9]\d{9})\b", text.replace(" ", ""))
         return match.group(1) if match else ""
 
+    @staticmethod
+    def _extract_email(text: str) -> str:
+        match = re.search(r"\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b", text)
+        return match.group(1) if match else ""
+
     @classmethod
     def _extract_location(cls, lowered: str) -> str:
         # Exact match first
@@ -373,21 +483,41 @@ class ConversationMemory:
 
     @staticmethod
     def _extract_room(lowered: str) -> str:
-        rooms = [
-            "murder mystery",
-            "hostage",
-            "curse of the pharaoh",
-            "classified",
-            "undercover",
-            "the wizarding championship",
-            "the forbidden forest",
-            "bomb defusal",
-            "prison break",
-            "zodiac",
-        ]
-        for room in rooms:
-            if room in lowered:
-                return room.title()
+        rooms = {
+            "murder mystery": "Murder Mystery",
+            "hostage": "Hostage",
+            "curse of the pharaoh": "Curse of the Pharaoh",
+            "pharaoh's curse": "Curse of the Pharaoh",
+            "pharaohs curse": "Curse of the Pharaoh",
+            "classified": "Classified",
+            "undercover": "Undercover",
+            "the wizarding championship": "The Wizarding Championship",
+            "wizarding championship": "The Wizarding Championship",
+            "wizard championship": "The Wizarding Championship",
+            "the forbidden forest": "The Forbidden Forest",
+            "forbidden forest": "The Forbidden Forest",
+            "bomb defusal": "Bomb Defusal",
+            "bomb defuser": "Bomb Defusal",
+            "defusal": "Bomb Defusal",
+            "prison break": "Prison Break",
+            "prison break-out": "Prison Break",
+            "prison breakout": "Prison Break",
+            "zodiac": "Zodiac",
+        }
+        for pattern, canonical in rooms.items():
+            if pattern in lowered:
+                return canonical
+                
+        # Fuzzy match using difflib for room names
+        import difflib
+        room_names = list(set(rooms.values()))
+        words = re.findall(r"[a-z]+", lowered)
+        for word in words:
+            if len(word) >= 5:
+                matches = difflib.get_close_matches(word, [r.lower() for r in room_names], n=1, cutoff=0.75)
+                if matches:
+                    idx = [r.lower() for r in room_names].index(matches[0])
+                    return room_names[idx]
         return ""
 
     @staticmethod
@@ -413,6 +543,7 @@ class ConversationMemory:
             r"\bgroup of\s+(\d{1,4})\b",
             r"\bfor\s+(\d{1,4})\b",
             r"\bwe are\s+(\d{1,4})\b",
+            r"\b(\d{1,4})\s*of us\b",
         ]
         for pattern in patterns:
             match = re.search(pattern, lowered)
@@ -420,13 +551,29 @@ class ConversationMemory:
                 return int(match.group(1))
 
         # Check for "a couple" or "two of us"
-        if "couple" in lowered or "two of us" in lowered or "both of us" in lowered:
+        if "couple" in lowered or "two of us" in lowered or "both of us" in lowered or "wife and me" in lowered or "husband and me" in lowered or "my wife and i" in lowered:
             return 2
+
+        # Check for "son and 9 friends"
+        son_friend_match = re.search(r"\b(?:my\s+)?(?:son|daughter|wife|husband|friend|brother|sister|partner)\s+and\s+(\d{1,2})\b", lowered)
+        if son_friend_match:
+            return int(son_friend_match.group(1)) + 1
+
+        # Check for "me and my 6 friends"
+        me_friend_match = re.search(r"\b(?:me|i|myself)\s+and\s+(?:my\s+)?(\d{1,2})\b", lowered)
+        if me_friend_match:
+            return int(me_friend_match.group(1)) + 1
 
         return ""
 
     @staticmethod
     def _extract_age_group(lowered: str) -> tuple[str, str]:
+        # High-confidence quick checks first
+        if any(phrase in lowered for phrase in ("all adults", "mostly adults", "only adults", "we are all adults", "adult group", "everyone is an adult")):
+            return "adults", ""
+        if any(phrase in lowered for phrase in ("all kids", "mostly kids", "only kids", "we are all kids", "kids group", "family with children", "family with kids")):
+            return "kids", ""
+
         # Check for 18 plus / above 18 / above 20 / above 21 etc. first
         age_patterns = [
             r"\b(\d{1,2})\s*(?:plus|\+)\b",
@@ -440,12 +587,6 @@ class ConversationMemory:
                     return "adults", f"{age_val}+"
 
         # Accept range patterns:
-        # 10-15
-        # 10 to 15
-        # age 10-15
-        # ages 10 to 15 years
-        # 10-15 years
-
         range_patterns = [
             r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\b",
             r"\b(?:ages?|age)\s+(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\s*years?\b",
@@ -518,6 +659,7 @@ class ConversationMemory:
         beginner_terms = (
             "beginner", "first time", "first-time", "never done", "never played",
             "none of us have played", "none of us has played", "new to escape",
+            "none of us has ever done", "none of us have ever done",
         )
         if any(term in lowered for term in beginner_terms):
             return "beginner"

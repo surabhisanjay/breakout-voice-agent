@@ -30,12 +30,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-try:
-    from .intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification
-    from .slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS
-except ImportError:  # Support direct execution from the src directory.
-    from intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification  # type: ignore
-    from slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS  # type: ignore
+from ..services.intent_detector import IntentDetector, CONF_PRESERVED, _build_clarification
+from ..services.slot_filler import SlotFiller, resolve_date, _BOOKING_INTENTS
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +132,6 @@ class ContextAccumulator:
                 break
 
         # Date
-        from slot_filler import resolve_date  # type: ignore
         date_val = resolve_date(text)
         if date_val:
             extracted["preferred_date"] = date_val
@@ -288,30 +283,3 @@ def _package(sf_result: Dict[str, Any], debug: Dict[str, Any]) -> Dict[str, Any]
     if sf_result["state"] == "complete":
         return {"reply_type": "booking_ready", "prompt": None,                "handoff": sf_result["handoff"],    "debug": debug}
     return     {"reply_type": "faq",           "prompt": None,                "handoff": None,                    "debug": debug}
-
-
-# ---------------------------------------------------------------------------
-# Demo — replays the failing transcript
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    session = ConversationSession()
-
-    turns = [
-        "I want to book",
-        "koramangala",
-        "murder mystery",
-        "Book it",
-        # --- if the above looped, these would be reached: ---
-        "koramangala",
-        "murder mystery",
-        "book",
-    ]
-
-    for msg in turns:
-        print(f"\nCustomer: {msg}")
-        response = turn_pipeline(msg, session)
-        reply    = response.get("prompt") or f"[{response['reply_type']}]"
-        print(f"Agent:    {reply}")
-        d = response["debug"]
-        print(f"  intent={d['intent']}  context={d['context']}  waiting_for={d['slot_waiting_for']}")

@@ -8,14 +8,16 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
 from main import dispatch  # noqa: E402
-from src.conversation_memory import ConversationMemory  # noqa: E402
-from src.inbound_agent import InboundAgent  # noqa: E402
-from src.knowledge_loader import KnowledgeLoader  # noqa: E402
+from src.memory.conversation_memory import ConversationMemory  # noqa: E402
+from src.agents.inbound_agent import InboundAgent  # noqa: E402
+from src.knowledge.knowledge_loader import KnowledgeLoader  # noqa: E402
 
 
 class RecordingComposer:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.last_error: str = ""
+        self.last_latency: float = 0.0
 
     def compose(self, **kwargs) -> str:
         self.calls.append(kwargs)

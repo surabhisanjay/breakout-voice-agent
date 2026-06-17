@@ -96,11 +96,11 @@ try:
 except ImportError:
     _HAS_LANGGRAPH = False
 
-from src.agents.booking_agent import BookingError, EscalationRequired
-from src.orchestration.booking_orchestrator import BookingOrchestrator
+from ..agents.booking_agent import BookingError, EscalationRequired
+from ..orchestration.booking_orchestrator import BookingOrchestrator
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from src.orchestration.booking_orchestrator import BookingOrchestrator as BookingAgent
+    from ..orchestration.booking_orchestrator import BookingOrchestrator as BookingAgent
 
 def booking_node_handler(handoff: Dict[str, Any], require_payment: bool = False) -> Dict[str, Any]:
     """Handle a handoff payload and attempt to create a booking using run_booking_workflow and BookingOrchestrator."""

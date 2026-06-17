@@ -64,6 +64,21 @@ class BookingTool:
         -------
         Booking confirmation dict (see module docstring).
         """
+        missing = [
+            field
+            for field in ("age_group", "location", "preferred_date", "customer_name", "phone")
+            if not memory.get(field)
+        ]
+        if not (memory.get("participants") or memory.get("company_size")):
+            missing.append("participants")
+        if missing:
+            return {
+                "booking_id": "",
+                "confirmed": False,
+                "prepared": False,
+                "error": f"Missing required booking fields: {', '.join(missing)}",
+            }
+
         booking_id = f"BRK-{uuid.uuid4().hex[:8].upper()}"
 
         return {

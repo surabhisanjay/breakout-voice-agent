@@ -23,9 +23,9 @@ from unittest.mock import MagicMock, patch
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
-from src.agent_response import AgentResponse  # noqa: E402
-from src.booking_agent import BookingAgent  # noqa: E402
-from src.conversation_memory import ConversationMemory  # noqa: E402
+from src.core.agent_response import AgentResponse  # noqa: E402
+from src.agents.booking_agent import BookingAgent  # noqa: E402
+from src.memory.conversation_memory import ConversationMemory  # noqa: E402
 from src.tools.availability_tool import AvailabilityTool  # noqa: E402
 from src.tools.booking_tool import BookingTool  # noqa: E402
 
@@ -43,6 +43,7 @@ def make_memory(tmp_path: Path, overrides: dict | None = None) -> ConversationMe
         "preferred_date": "18 June",
         "participants": 20,
         "company_size": 20,
+        "age_group": "adults",
         "food_required": True,
         "budget_range": "premium",
         "customer_name": "Siddharth",
@@ -363,8 +364,8 @@ def test_dispatch_handoff_creates_booking_agent(tmp_path: Path) -> None:
     """When InboundAgent emits should_handoff=True, dispatch() must switch to BookingAgent."""
     import main as main_module
 
-    from src.inbound_agent import InboundAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = make_memory(tmp_path, {"intent": "corporate_event"})
@@ -398,8 +399,8 @@ def test_dispatch_booking_agent_owns_subsequent_turns(tmp_path: Path) -> None:
     """Once active_agent is 'booking_agent', dispatch must NOT call InboundAgent."""
     import main as main_module
 
-    from src.inbound_agent import InboundAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = make_memory(tmp_path)
@@ -437,8 +438,8 @@ def test_dispatch_fires_booking_agent_for_corporate_events_agent_route(tmp_path:
     """
     import main as main_module
 
-    from src.inbound_agent import InboundAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = make_memory(tmp_path, {"intent": "corporate_event"})
@@ -483,7 +484,7 @@ def _make_qa_at_budget_step(tmp_path: Path) -> tuple:
     Corporate event fields in order: location, preferred_date, food_required,
     budget_range, customer_name, phone.
     """
-    from src.qualification_agent import QualificationAgent
+    from src.agents.qualification_agent import QualificationAgent
     memory = ConversationMemory(tmp_path / "session.json")
     memory.data.update({
         "intent": "corporate_event",
@@ -551,7 +552,7 @@ def test_budget_stores_canonical_not_raw_utterance(tmp_path: Path) -> None:
 
 def test_budget_extract_canonical_covers_voice_phrases(tmp_path: Path) -> None:
     """Unit-test _extract_budget_canonical directly against all expected voice phrases."""
-    from src.qualification_agent import QualificationAgent
+    from src.agents.qualification_agent import QualificationAgent
     extract = QualificationAgent._extract_budget_canonical
 
     assert extract("Premium") == "premium"
@@ -570,7 +571,7 @@ def test_budget_extract_canonical_covers_voice_phrases(tmp_path: Path) -> None:
 
 def test_budget_is_valid_covers_natural_phrases(tmp_path: Path) -> None:
     """Unit-test _is_valid_budget against natural voice phrases."""
-    from src.qualification_agent import QualificationAgent
+    from src.agents.qualification_agent import QualificationAgent
     valid = QualificationAgent._is_valid_budget
 
     assert valid("Premium")
@@ -594,8 +595,8 @@ def test_post_handoff_messages_route_to_booking_agent_not_inbound(tmp_path: Path
     """
     import main as main_module
 
-    from src.inbound_agent import InboundAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = make_memory(tmp_path, {"intent": "corporate_event"})
@@ -636,7 +637,7 @@ def test_post_handoff_messages_route_to_booking_agent_not_inbound(tmp_path: Path
 # 15. Simulator Backend Tests                                         #
 # ------------------------------------------------------------------ #
 
-from src.booking_agent import BookingSimulator, BookingError
+from src.agents.booking_agent import BookingSimulator, BookingError
 
 
 def test_create_and_confirm_booking():

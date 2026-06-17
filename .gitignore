@@ -20,7 +20,7 @@ htmlcov/
 
 # Runtime artefacts — should never be committed
 logs/
-memory/
+/memory/
 
 # Audio scratch files
 *.wav

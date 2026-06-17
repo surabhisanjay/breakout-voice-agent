@@ -241,9 +241,24 @@ class IntentDetector:
         # ---- 2. Direct booking trigger ----
         if _BOOKING_TRIGGERS.search(text):
             if _BOOKING_EVENT_HINTS.search(text):
+                if "corporate" in text or "office" in text or "company" in text or "employee" in text:
+                    detected_intent = "corporate_event"
+                elif "birthday" in text or "bday" in text:
+                    detected_intent = "birthday_party"
+                elif "couple" in text or "anniversary" in text:
+                    detected_intent = "couple_event"
+                elif "bachelor" in text:
+                    detected_intent = "bachelor_party"
+                elif "farewell" in text:
+                    detected_intent = "farewell_party"
+                elif "virtual" in text or "online" in text:
+                    detected_intent = "virtual_event"
+                else:
+                    detected_intent = "escape_room_inquiry"
+
                 return IntentResult(
-                    "escape_room_inquiry", CONF_STRONG,
-                    "matched booking trigger with event hint",
+                    detected_intent, CONF_STRONG,
+                    f"matched booking trigger with specific hint: {detected_intent}",
                     entities,
                 )
             # Generic booking request without explicit event type; do not force escape_room_inquiry.

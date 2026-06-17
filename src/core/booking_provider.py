@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
-from .integrations.breakout_api import BreakoutAPI, BreakoutAPIError
-from .tools.availability_tool import AvailabilityTool
-from .tools.booking_tool import BookingTool
+from ..integrations.kreeda.breakout_api import BreakoutAPI, BreakoutAPIError
+from ..tools.availability_tool import AvailabilityTool
+from ..tools.booking_tool import BookingTool
 
 
 class BookingProvider(ABC):
@@ -24,12 +25,56 @@ class SimulatorProvider(BookingProvider):
     def __init__(self) -> None:
         self.availability_tool = AvailabilityTool()
         self.booking_tool = BookingTool()
+        self.bookings: dict[str, dict[str, Any]] = {}
+        self.slots: dict[str, dict[str, Any]] = {}
 
     def check_availability(self, location: str, date: str, participants: int, room: str = "") -> dict:
-        return self.availability_tool.check(location, date, participants)
+        res = self.availability_tool.check(location, date, participants)
+        slots_list = res.get("slots", [])
+        for time_str in slots_list:
+            slot_id = f"slot_{location.lower().replace(' ', '')}_{date.lower().replace(' ', '')}_{time_str.lower().replace(' ', '')}"
+            self.slots[slot_id] = {
+                "slot_id": slot_id,
+                "location": location,
+                "date": date,
+                "time": time_str,
+                "room": room,
+                "participants": participants,
+                "available": True,
+            }
+        return res
 
     def prepare_booking(self, memory: dict, chosen_slot: str) -> dict:
-        return self.booking_tool.create(memory, chosen_slot)
+        missing = [
+            field
+            for field in ("age_group", "location", "preferred_date", "customer_name", "phone")
+            if not memory.get(field)
+        ]
+        if not (memory.get("participants") or memory.get("company_size")):
+            missing.append("participants")
+        if missing:
+            return {
+                "booking_id": "",
+                "confirmed": False,
+                "prepared": False,
+                "error": f"Missing required booking fields: {', '.join(missing)}",
+            }
+        res = self.booking_tool.create(memory, chosen_slot)
+        ref = res.get("booking_id")
+        self.bookings[ref] = {
+            "booking_id": ref,
+            "confirmed": True,
+            "location": memory.get("location", ""),
+            "date": memory.get("preferred_date", ""),
+            "slot": chosen_slot,
+            "participants": memory.get("participants") or memory.get("company_size", ""),
+            "event_type": memory.get("event_type", ""),
+            "customer_name": memory.get("customer_name", ""),
+            "phone": memory.get("phone", ""),
+            "room": memory.get("room") or memory.get("recommended_option", ""),
+            "status": "confirmed",
+        }
+        return res
 
 
 class BreakoutAPIProvider(BookingProvider):
@@ -55,6 +100,20 @@ class BreakoutAPIProvider(BookingProvider):
         return self.client.get_available_slots(location_id, game_ids, start_date, end_date)
 
     def prepare_booking(self, memory: dict, chosen_slot: str) -> dict:
+        missing = [
+            field
+            for field in ("age_group", "location", "preferred_date", "customer_name", "phone")
+            if not memory.get(field)
+        ]
+        if not (memory.get("participants") or memory.get("company_size")):
+            missing.append("participants")
+        if missing:
+            return {
+                "booking_id": "",
+                "confirmed": False,
+                "prepared": False,
+                "error": f"Missing required booking fields: {', '.join(missing)}",
+            }
         slot = self._slot_lookup.get(self._normalise_time(chosen_slot))
         if not slot:
             raise BreakoutAPIError("The selected slot is no longer available.", code="NOT_FOUND")
@@ -136,6 +195,8 @@ class BreakoutAPIProvider(BookingProvider):
     @staticmethod
     def _normalise_time(value: str) -> str:
         value = value.strip().upper().replace(".", "")
+        value = re.sub(r"(?<=\d):(?=\s*(?:AM|PM)\b)", ":00", value)
+        value = re.sub(r"\s*(AM|PM)$", r" \1", value)
         for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
             try:
                 return datetime.strptime(value, fmt).strftime("%H:%M")

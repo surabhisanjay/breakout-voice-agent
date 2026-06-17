@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .intent_detector import IntentDetector
-from .booking_agent import BookingAgent
+from ..services.intent_detector import IntentDetector
+from ..agents.booking_agent import BookingAgent
+from ..services.question_classifier import QuestionClassifier
 
 if TYPE_CHECKING:
-    from .conversation_memory import ConversationMemory
+    from ..memory.conversation_memory import ConversationMemory
 
 
 class ConversationManager:
@@ -31,6 +32,37 @@ class ConversationManager:
         """
         lowered = message.lower().strip()
 
+        # ------------------------------------------------------------------ #
+        # PRE-ROUTING: QuestionClassifier runs before any keyword check.      #
+        # Priority order: Customer Question → Recommendation → FAQ →          #
+        #   Qualification → Booking                                           #
+        #                                                                     #
+        # This catches question forms that keyword lists miss:                #
+        #   "explain more", "tell me more", "why", "before that…",           #
+        #   "your favorite", "best room", "most popular room", etc.          #
+        # ------------------------------------------------------------------ #
+        q_analysis = QuestionClassifier.classify(message)
+        if q_analysis.asked_question and q_analysis.question_type not in ("booking_signal", ""):
+            if q_analysis.question_type == "repair":
+                # Stay on the current agent; it will repeat the previous question
+                return active_agent, "faq"
+            if q_analysis.question_type == "recommendation":
+                return "inbound_agent", "recommendation"
+            if q_analysis.question_type in ("faq", "policy", "unknown"):
+                target = "booking_agent" if active_agent == "booking_agent" else "inbound_agent"
+                return target, "faq"
+
+        if active_agent == "booking_agent" and "food" in lowered:
+            return "booking_agent", "continuing_workflow"
+
+        cancellation_policy_terms = (
+            "cancellation policy", "cancel policy", "cancellation charges",
+            "cancellation rules", "refund policy", "what if i cancel",
+        )
+        if any(term in lowered for term in cancellation_policy_terms):
+            target = "booking_agent" if active_agent == "booking_agent" else "inbound_agent"
+            return target, "faq"
+
         # Let's run the intent detector without context to see the absolute intent of this message
         intent_res = self.intent_detector.detect(message, previous_intent="")
         detected_intent = intent_res.intent
@@ -46,11 +78,18 @@ class ConversationManager:
             return "inbound_agent", "new_birthday"
 
         # 3. Explicit recommendation requests preempt active workflows.
-        recommend_keywords = {"recommend", "suggest", "better for", "recommendation", "which one", "which rooms"}
+        recommend_keywords = {
+            "recommend", "suggest", "better for", "recommendation", "which one",
+            "which rooms", "which would you choose", "what would you recommend",
+        }
         if any(kw in lowered for kw in recommend_keywords):
             return "inbound_agent", "recommendation"
 
-        # 4. Explicit practical questions preempt active workflows.
+        # 4. Check for Rules or Rooms FAQ early
+        if self._is_rules_or_rooms_faq(message):
+            return "inbound_agent", "faq"
+
+        # 4b. Explicit practical questions preempt active workflows.
         faq_keywords = {"parking", "location", "locations", "where", "how long", "duration", "is this", "what is", "walk in", "cost", "price", "toilet", "food", "available", "rooms are available"}
         if (detected_intent == "general_faq" and intent_res.confidence > 0.5) or "?" in lowered or any(kw in lowered for kw in faq_keywords):
             return "inbound_agent", "faq"
@@ -73,6 +112,31 @@ class ConversationManager:
 
         # Default to whatever is currently active
         return active_agent, "continuing_workflow"
+
+    def _is_rules_or_rooms_faq(self, message: str) -> bool:
+        lowered = message.lower().strip()
+        rules_patterns = [
+            r"\bexplain\s+(?:the\s+)?rules\b",
+            r"\bwhat\s+are\s+the\s+rules\b",
+            r"\bhow\s+does\s+it\s+work\b",
+            r"\bwhat\s+happens\s+inside\b",
+            r"\bfirst\s+time\s+here\b",
+        ]
+        rooms_patterns = [
+            r"\bexplain\s+(?:the\s+)?rooms\b",
+            r"\bcan\s+(?:you\s+)?explain\s+(?:the\s+)?rooms\b",
+            r"\bwhat\s+rooms\b",
+            r"\btell\s+me\s+about\s+(?:the\s+)?rooms\b",
+            r"\broom\s+options\b",
+        ]
+        extra_faq_phrases = ("can explain rooms", "explain rooms", "tell me about rooms", "explain rules", "how does it work")
+        
+        for pat in rules_patterns + rooms_patterns:
+            if re.search(pat, lowered):
+                return True
+        if any(phrase in lowered for phrase in extra_faq_phrases):
+            return True
+        return False
 
     def _is_booking_continuation(self, message: str) -> bool:
         lowered = message.lower().strip()

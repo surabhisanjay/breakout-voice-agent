@@ -1,0 +1,55 @@
+[
+  {
+    "customer_message": "We are a group of seven friends and have never done an escape room.",
+    "state": {
+      "participants": 7,
+      "experience_level": "beginner",
+      "intent": "escape_room_inquiry",
+      "location": "",
+      "age_group": ""
+    },
+    "approved_draft": "I recommend Murder Mystery. What is the age group of the players?",
+    "composed_response": "Awesome. Seven people is a great group size. I'd probably start with Murder Mystery since it's beginner-friendly. Are you all adults?"
+  },
+  {
+    "customer_message": "We are running late.",
+    "state": {
+      "intent": "general_faq",
+      "current_workflow": "general"
+    },
+    "approved_draft": "Don't worry, let me help. The game starts at the scheduled time because sessions run back to back, so arriving late reduces the time available inside the room. How late do you expect to be?",
+    "composed_response": "No worries. The games run back to back, so any delay cuts into your play time. How far away are you?"
+  },
+  {
+    "customer_message": "What happens if we don't escape?",
+    "state": {
+      "intent": "general_faq",
+      "current_workflow": "general"
+    },
+    "approved_draft": "Don't worry, we won't keep you locked forever. Players are not actually locked in, and our team monitors the game and can assist when needed.",
+    "composed_response": "Don't worry, we won't keep you locked forever. When time's up, the game master lets you out."
+  },
+  {
+    "customer_message": "They are all adults.",
+    "state": {
+      "participants": 7,
+      "age_group": "adults",
+      "intent": "escape_room_inquiry",
+      "location": ""
+    },
+    "approved_draft": "Which location would you prefer: Koramangala, Whitefield, or JP Nagar?",
+    "composed_response": "Perfect, all adults. Which location works best: Koramangala, Whitefield, or JP Nagar?"
+  },
+  {
+    "customer_message": "We need an event for 15 employees.",
+    "state": {
+      "participants": 15,
+      "company_size": 15,
+      "event_type": "corporate_event",
+      "intent": "corporate_event",
+      "location": ""
+    },
+    "approved_draft": "For a corporate team, I'd suggest combining Escape Rooms with Scavenger Hunt. Which location are you considering?",
+    "composed_response": "Nice, fifteen is a good team size. I'd probably combine Escape Rooms with Scavenger Hunt so everyone stays involved. Which location are you considering?"
+  }
+]

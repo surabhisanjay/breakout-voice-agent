@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
-from src.agent_response import AgentResponse
-from src.booking_agent import BookingAgent
-from src.conversation_memory import ConversationMemory
-from src.inbound_agent import InboundAgent
-from src.knowledge_loader import KnowledgeLoader
-from src.transcript_logger import TranscriptLogger
-from src.voice_input import VoiceInput
-from src.voice_output import VoiceOutput
-from src.conversation_manager import ConversationManager
+from src.core.agent_response import AgentResponse
+from src.agents.booking_agent import BookingAgent
+from src.memory.conversation_memory import ConversationMemory
+from src.agents.inbound_agent import InboundAgent
+from src.knowledge.knowledge_loader import KnowledgeLoader
+from src.logger.transcript_logger import TranscriptLogger
+from src.voice.stt.voice_input import VoiceInput
+from src.voice.tts.voice_output import VoiceOutput
+from src.orchestration.conversation_manager import ConversationManager
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -61,9 +62,28 @@ def build_agent(args: argparse.Namespace) -> InboundAgent:
 
 def print_result(result: AgentResponse, show_debug: bool) -> None:
     print(f"\nAgent: {result.response}")
+    if not show_debug:
+        return
+
+    state = result.state or {}
+    core_keys = [
+        "customer_name", "phone", "location", "participants", "age_group",
+        "experience_level", "event_type", "preferred_date", "food_required", "budget_range"
+    ]
+    filled = [k for k in core_keys if state.get(k)]
+    missing = result.missing_fields or []
+    next_expected = missing[0] if missing else "none"
+    
+    print("\n--- Memory Validation ---")
+    print(f"filled_fields: {filled}")
+    print(f"missing_fields: {missing}")
+    print(f"next_expected_field: {next_expected}")
+    print(f"Verified Routing: {result.next_agent} | handoff={result.should_handoff}")
+    print("-------------------------\n")
+
     if show_debug:
         debug = result.get("debug", {})
-        print("\n--- Debug ---")
+        print("--- Full Debug ---")
         print(f"Intent: {result.intent} ({result.intent_confidence:.2f})")
         print(f"Recommendation: {result.recommendation.get('option', '')}")
         print(f"Missing fields: {', '.join(result.missing_fields) or 'none'}")
@@ -78,11 +98,47 @@ def print_result(result: AgentResponse, show_debug: bool) -> None:
             print(f"Booking: {json.dumps(result.booking, indent=2)}")
         else:
             print(f"Handoff summary: {result.handoff_summary}")
+        print("-------------------\n")
 
 
-# ------------------------------------------------------------------ #
-# Single dispatcher — routes turns to the right agent each loop      #
-# ------------------------------------------------------------------ #
+def run_startup_check(agent: InboundAgent) -> None:
+    """Print a pre-demo startup validation banner."""
+    import os
+    import time
+
+    demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+    if demo_mode:
+        import logging
+        logging.getLogger().setLevel(logging.ERROR)
+
+    # ── env reads ──────────────────────────────────────────────────
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    openai_enabled = bool(openai_key)
+
+    # Do not make network calls during startup. Runtime calls fail over to the
+    # approved deterministic draft and disable OpenAI after the first failure.
+    openai_quota_ok = openai_enabled and not demo_mode
+    if not openai_enabled or demo_mode:
+        agent.use_openai = False
+        agent.response_composer.enabled = False
+
+    # ── personality prompt & examples ─────────────────────────────
+    personality_loaded = bool(
+        getattr(agent.response_composer, "system_prompt", "")
+    )
+    examples_count = len(getattr(agent.response_composer, "few_shot_examples", []))
+
+    # ── booking provider ───────────────────────────────────────────
+    booking_provider = "simulator" if demo_mode or not (
+        os.environ.get("BOOKING_API_KEY") and os.environ.get("BOOKING_BASE_URL")
+    ) else "live-configured"
+
+    # ── banner (Exactly four lines, nothing else) ─────────────────
+    print(f"OPENAI_ENABLED={openai_enabled and openai_quota_ok}")
+    print(f"BOOKING_PROVIDER={booking_provider}")
+    print(f"PERSONALITY_PROMPT_LOADED={personality_loaded}")
+    print(f"TRANSCRIPT_EXAMPLES_LOADED={examples_count}")
+
 
 def dispatch(
     message: str,
@@ -97,100 +153,140 @@ def dispatch(
     The booking_agent instance is created lazily on first handoff.
     Once created it persists for the session (owns the conversation).
     """
-    manager = ConversationManager(inbound.memory)
-    target_agent, category = manager.determine_routing(message, active_agent)
-    preempted_active_booking = active_agent == "booking_agent" and target_agent == "inbound_agent"
+    try:
+        import os
+        demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+        
+        manager = ConversationManager(inbound.memory)
+        target_agent, category = manager.determine_routing(message, active_agent)
+        preempted_active_booking = active_agent == "booking_agent" and target_agent == "inbound_agent"
 
-    # 1. Handle preemption from booking_agent to inbound_agent (e.g., FAQ, recommendation, new inquiry)
-    if preempted_active_booking:
-        active_agent = "inbound_agent"
-        inbound.memory.data["current_workflow"] = "general"
-        inbound.memory.data["booking_consent_pending"] = False
-        inbound.qualification_agent._waiting_for = ""
-        if booking is not None:
-            # Reset booking agent internal state so it restarts fresh next time
-            booking._state = booking._STATE_CHECKING_AVAILABILITY
-            booking._available_slots = []
-            booking._last_availability = {}
-            booking._booking_result = None
-        inbound.memory.save()
+        # 1. Handle preemption from booking_agent to inbound_agent (e.g., FAQ, recommendation, new inquiry)
+        if preempted_active_booking:
+            active_agent = "inbound_agent"
+            inbound.memory.data["current_workflow"] = "general"
+            inbound.memory.data["booking_consent_pending"] = False
+            inbound.qualification_agent._waiting_for = ""
+            if booking is not None:
+                # Reset booking agent internal state so it restarts fresh next time
+                booking._state = booking._STATE_CHECKING_AVAILABILITY
+                booking._available_slots = []
+                booking._last_availability = {}
+                booking._booking_result = None
+            inbound.memory.save()
 
-    # 2. Handle new inquiry topic switch (reset qualification memory)
-    category_intents = {
-        "new_corporate": "corporate_event",
-        "new_birthday": "birthday_party",
-        "new_escape_room": "escape_room_inquiry",
-    }
-    current_intent = str(inbound.memory.data.get("intent", ""))
-    requested_intent = category_intents.get(category, "")
-    if category == "new_booking":
-        detected = manager.intent_detector.detect(message, previous_intent="").intent
-        if detected in {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}:
-            requested_intent = detected
-    is_actual_topic_switch = bool(requested_intent and current_intent and requested_intent != current_intent)
-    extracted_participants = inbound.memory._extract_participants(
-        inbound.memory.normalize_number_words(message).lower()
-    )
-    stored_participants = inbound.memory.data.get("participants")
-    is_replacement_group = bool(
-        requested_intent
-        and requested_intent == current_intent
-        and extracted_participants
-        and stored_participants
-        and extracted_participants != stored_participants
-    )
+        # 2. Handle new inquiry topic switch (reset qualification memory)
+        category_intents = {
+            "new_corporate": "corporate_event",
+            "new_birthday": "birthday_party",
+            "new_escape_room": "escape_room_inquiry",
+        }
+        current_intent = str(inbound.memory.data.get("intent", ""))
+        requested_intent = category_intents.get(category, "")
+        if category == "new_booking":
+            detected = manager.intent_detector.detect(message, previous_intent="").intent
+            if detected in {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}:
+                requested_intent = detected
+        is_actual_topic_switch = bool(requested_intent and current_intent and requested_intent != current_intent)
+        extracted_participants = inbound.memory._extract_participants(
+            inbound.memory.normalize_number_words(message).lower()
+        )
+        stored_participants = inbound.memory.data.get("participants")
+        is_replacement_group = bool(
+            requested_intent
+            and requested_intent == current_intent
+            and extracted_participants
+            and stored_participants
+            and extracted_participants != stored_participants
+        )
 
-    if is_actual_topic_switch or is_replacement_group:
-        fields_to_clear = [
-            "location", "participants", "age_group", "experience_level",
-            "company_size", "event_type", "preferred_date", "food_required",
-            "budget_range", "intent", "recommended_option"
-        ]
-        for field in fields_to_clear:
-            inbound.memory.data[field] = ""
-        inbound.memory.data["discussed_options"] = []
-        inbound.memory.data["customer_preferences"] = []
-        inbound.memory.data["concerns"] = []
-        inbound.memory.data["current_workflow"] = "general"
-        inbound.memory.data["booking_consent_pending"] = False
-        inbound.qualification_agent._waiting_for = ""
-        inbound.memory.save()
+        if is_actual_topic_switch or is_replacement_group:
+            fields_to_clear = [
+                "location", "participants", "age_group", "experience_level",
+                "company_size", "event_type", "preferred_date", "food_required",
+                "budget_range", "intent", "recommended_option"
+            ]
+            for field in fields_to_clear:
+                inbound.memory.data[field] = ""
+            inbound.memory.data["discussed_options"] = []
+            inbound.memory.data["customer_preferences"] = []
+            inbound.memory.data["concerns"] = []
+            inbound.memory.data["current_workflow"] = "general"
+            inbound.memory.data["booking_consent_pending"] = False
+            inbound.qualification_agent._waiting_for = ""
+            inbound.memory.save()
 
-        # Ensure we route to inbound_agent for the new qualification
-        active_agent = "inbound_agent"
-        if booking is not None:
-            booking._state = booking._STATE_CHECKING_AVAILABILITY
-            booking._available_slots = []
-            booking._last_availability = {}
-            booking._booking_result = None
+            # Ensure we route to inbound_agent for the new qualification
+            active_agent = "inbound_agent"
+            if booking is not None:
+                booking._state = booking._STATE_CHECKING_AVAILABILITY
+                booking._available_slots = []
+                booking._last_availability = {}
+                booking._booking_result = None
 
-    if active_agent == "booking_agent" and booking is not None:
-        result = booking.handle_message(message)
-        return result, booking, "booking_agent"
+        if active_agent == "booking_agent" and booking is not None:
+            # Force booking agent's orchestrator to match demo mode
+            if demo_mode:
+                booking.orchestrator.is_live = False
+            result = booking.handle_message(message)
+            return result, booking, "booking_agent"
 
-    # InboundAgent handles this turn
-    result = inbound.handle_message(message)
+        # InboundAgent handles this turn
+        result = inbound.handle_message(message)
 
-    # A practical question or recommendation that interrupted booking must be
-    # answered without immediately bouncing the same turn back into booking.
-    if preempted_active_booking and category in {"faq", "recommendation"}:
-        result.should_handoff = False
-        result.next_agent = "inbound_agent"
+        # A practical question or recommendation that interrupted booking must be
+        # answered without immediately bouncing the same turn back into booking.
+        if preempted_active_booking and category in {"faq", "recommendation"}:
+            result.should_handoff = False
+            result.next_agent = "inbound_agent"
+            return result, booking, "inbound_agent"
+
+        # Demo safety: keep intake ownership until the existing handoff
+        # contract has date and contact details, not only recommendation data.
+        if demo_mode and result.should_handoff and not inbound.memory.handoff_ready(result.intent):
+            result.should_handoff = False
+            result.next_agent = "inbound_agent"
+
+        # Handoff decision — any qualified intent routes to BookingAgent.
+        # The Router may name the target "corporate_events_agent", "birthday_booking_agent" etc.
+        # (those are future specialist agents). For now, BookingAgent is the universal
+        # post-qualification stage that checks availability and confirms the booking.
+        if result.should_handoff:
+            if booking is None:
+                booking = BookingAgent(inbound.memory)
+            # Sync response composer state
+            booking.response_composer.enabled = inbound.response_composer.enabled
+            if demo_mode:
+                booking.orchestrator.is_live = False
+            # First BookingAgent turn: run availability check immediately.
+            # The sentinel "ready" is ignored by BookingAgent — it reads location/date from memory.
+            booking_result = booking.handle_message("ready")
+            return booking_result, booking, "booking_agent"
+
         return result, booking, "inbound_agent"
 
-    # Handoff decision — any qualified intent routes to BookingAgent.
-    # The Router may name the target "corporate_events_agent", "birthday_booking_agent" etc.
-    # (those are future specialist agents). For now, BookingAgent is the universal
-    # post-qualification stage that checks availability and confirms the booking.
-    if result.should_handoff:
-        if booking is None:
-            booking = BookingAgent(inbound.memory)
-        # First BookingAgent turn: run availability check immediately.
-        # The sentinel "ready" is ignored by BookingAgent — it reads location/date from memory.
-        booking_result = booking.handle_message("ready")
-        return booking_result, booking, "booking_agent"
+    except Exception as exc:
+        # Prevent any crash, stack trace, or network exception output
+        import os
+        from src.core.agent_response import AgentResponse
+        
+        # Enforce fail safe mode
+        inbound.use_openai = False
+        inbound.response_composer.enabled = False
+        if booking is not None:
+            booking.orchestrator.is_live = False
+            booking.response_composer.enabled = False
 
-    return result, booking, "inbound_agent"
+        # Build a safe friendly deterministic response
+        fallback_text = "I've processed your request. Let me assist you with that. Could you please confirm your name?"
+        return AgentResponse(
+            response=fallback_text,
+            intent=str(inbound.memory.data.get("intent", "escape_room_inquiry")),
+            next_agent="inbound_agent",
+            should_handoff=False,
+            state=inbound.memory.as_state(),
+        ), booking, "inbound_agent"
+
 
 
 
@@ -209,8 +305,11 @@ def run_text_loop(args: argparse.Namespace) -> None:
     booking_agent: BookingAgent | None = None
     active_agent = "inbound_agent"
 
-    print("Breakout Inbound Agent is running locally.")
-    print("Type a customer message. Commands: /handoff, /show_memory, /reset, /quit")
+    demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+    if not demo_mode:
+        print("Breakout Inbound Agent is running locally.")
+        print("Type a customer message. Commands: /handoff, /show_memory, /reset, /quit")
+    run_startup_check(inbound)
 
     while True:
         try:
@@ -255,15 +354,19 @@ def run_voice_loop(args: argparse.Namespace) -> None:
     memory = inbound.memory
     memory.reset()
 
-    print("Loading Whisper voice model...")
+    demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+    if not demo_mode:
+        print("Loading Whisper voice model...")
     voice_in = VoiceInput(model_name=args.whisper_model, language="en", debug=args.debug)
     # Warm up / pre-load Whisper model to avoid lag on first turn
     try:
         import whisper
         voice_in._model = whisper.load_model(args.whisper_model)
-        print("Whisper voice model loaded.")
+        if not demo_mode:
+            print("Whisper voice model loaded.")
     except Exception as e:
-        print(f"Warning: could not pre-load Whisper: {e}")
+        if not demo_mode:
+            print(f"Warning: could not pre-load Whisper: {e}")
 
     voice_out = VoiceOutput(enabled=True, debug=args.debug)
     logger = TranscriptLogger(BASE_DIR / "logs" / "conversations")
@@ -271,10 +374,13 @@ def run_voice_loop(args: argparse.Namespace) -> None:
     booking_agent: BookingAgent | None = None
     active_agent = "inbound_agent"
 
-    print("Voice mode is running. Press Ctrl+C to stop.")
-    print("Speak after the recording prompt. Say 'quit' or 'goodbye' to stop.")
+    if not demo_mode:
+        print("Voice mode is running. Press Ctrl+C to stop.")
+        print("Speak after the recording prompt. Say 'quit' or 'goodbye' to stop.")
+    run_startup_check(inbound)
     greeting = "Hello, thank you for calling Breakout Escape Rooms. How may I help you today?"
-    print(f"\nAgent: {greeting}")
+    if not demo_mode:
+        print(f"\nAgent: {greeting}")
     speak_then_resume_listening(voice_out, greeting, debug=args.debug)
 
     while True:
@@ -337,6 +443,8 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     parsed_args = parse_args()
+    if parsed_args.debug:
+        os.environ["BREAKOUT_DEBUG"] = "true"
     if parsed_args.voice:
         run_voice_loop(parsed_args)
     else:

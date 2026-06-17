@@ -3,8 +3,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from .question_classifier import QuestionClassifier, QuestionAnalysis
+
 if TYPE_CHECKING:
-    from .conversation_memory import ConversationMemory
+    from ..memory.conversation_memory import ConversationMemory
+
+
+# Re-export so callers can import from here without knowing the module layout.
+__all__ = ["ConversationIntelligenceLayer", "QuestionClassifier", "QuestionAnalysis"]
 
 
 class ConversationIntelligenceLayer:
@@ -70,7 +76,9 @@ class ConversationIntelligenceLayer:
             return message
 
         # 1. "which one" -> "which of [room1] or [room2]"
-        if "which one" in lowered:
+        # "Which is best?" stays untouched so the agent can resolve it
+        # against the last discussed topic, including food and packages.
+        if "which one" in lowered and not any(term in lowered for term in ("recommend", "suggest", "choose", "pick")):
             if len(discussed) >= 2:
                 resolved_rooms = " or ".join(discussed[-2:])
                 return re.sub(r"which one", f"which of {resolved_rooms}", message, flags=re.IGNORECASE)
@@ -86,13 +94,36 @@ class ConversationIntelligenceLayer:
             return re.sub(r"that one", last_room, message, flags=re.IGNORECASE)
 
         # 3. "would that work for kids" / "is that better"
-        if "would that work" in lowered or "is that better" in lowered or "work for kids" in lowered:
+        if (
+            "would that work" in lowered
+            or "is that better" in lowered
+            or "is that one better" in lowered
+            or "work for kids" in lowered
+        ):
             if "that" in lowered:
                 last_room = discussed[-1]
                 # Regex word boundary match for 'that'
                 return re.sub(r"\bthat\b", last_room, message, flags=re.IGNORECASE)
 
         return message
+
+    # ---------------------------------------------------------------------- #
+    # Question classification                                                 #
+    # ---------------------------------------------------------------------- #
+
+    def classify_question(self, message: str) -> QuestionAnalysis:
+        """
+        Classify whether the customer's message is a question, and what type.
+
+        Returns a QuestionAnalysis dataclass with:
+          asked_question      — True if the customer asked something
+          question_type       — recommendation | faq | policy | repair | booking_signal | unknown
+          topic               — human-readable topic string
+          can_answer_deterministically — whether knowledge is available
+          needs_tool          — whether a booking/availability tool is required
+          needs_clarification — whether the agent should ask a follow-up
+        """
+        return QuestionClassifier.classify(message)
 
     def get_consultative_selling_reply(self, message: str) -> str | None:
         """
@@ -119,13 +150,12 @@ class ConversationIntelligenceLayer:
             )
 
         # 2. First timer consultative advice
-        if exp == "beginner" and ("recommend" in lowered or "first time" in lowered or "suggest" in lowered or "never" in lowered or "none of us" in lowered):
+        if exp == "beginner" and not self.memory.data.get("discussed_options") and ("recommend" in lowered or "first time" in lowered or "suggest" in lowered or "never" in lowered or "none of us" in lowered):
             room_keywords = ("murder", "hostage", "wizarding", "pharaoh", "forest", "classified", "undercover", "prison", "bomb")
             if not any(room in lowered for room in room_keywords):
                 return (
-                    "No problem at all! We love hosting first-time players. I'd usually recommend starting with "
-                    "Murder Mystery because it gives you investigation-style puzzles and teamwork without feeling "
-                    "overwhelming. If you want something slightly more exciting, Hostage is a great alternative. "
+                    "No worries. I'd probably start with Murder Mystery for a first visit. "
+                    "Hostage is the more urgent option if the group wants extra pressure."
                 )
 
         return None

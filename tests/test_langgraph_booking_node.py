@@ -8,7 +8,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
 from integrations.langgraph_booking_node import run_booking_workflow
-from src.booking_agent import BookingSimulator as BookingAgent, BookingError
+from src.agents.booking_agent import BookingSimulator as BookingAgent, BookingError
 
 
 def test_run_booking_workflow_basic(tmp_path: Path) -> None:

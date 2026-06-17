@@ -11,10 +11,10 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 import main as main_module  # noqa: E402
 from main import is_exit_command, run_text_loop, run_voice_loop, should_process_transcript, speak_then_resume_listening  # noqa: E402
-from src.conversation_memory import ConversationMemory  # noqa: E402
-from src.inbound_agent import InboundAgent  # noqa: E402
-from src.knowledge_loader import KnowledgeLoader  # noqa: E402
-from src.qualification_agent import QualificationAgent  # noqa: E402
+from src.memory.conversation_memory import ConversationMemory  # noqa: E402
+from src.agents.inbound_agent import InboundAgent  # noqa: E402
+from src.knowledge.knowledge_loader import KnowledgeLoader  # noqa: E402
+from src.agents.qualification_agent import QualificationAgent  # noqa: E402
 
 
 def make_agent(tmp_path: Path) -> InboundAgent:
@@ -156,7 +156,7 @@ def test_kids_recommendation(tmp_path: Path) -> None:
     assert "Murder Mystery and Hostage" in result["response"]
     assert "investigation" in result["response"]
     assert "urgency" in result["response"]
-    assert "Which location" in result["response"]
+    assert "bangalore locations" in result["response"].lower()
 
 
 def test_free_form_kids_recommendation_with_location(tmp_path: Path) -> None:
@@ -165,7 +165,7 @@ def test_free_form_kids_recommendation_with_location(tmp_path: Path) -> None:
     assert "Murder Mystery and Hostage" in result["response"]
     assert "investigation" in result["response"]
     assert "Whitefield" in result["response"]
-    assert "more details" in result["response"]
+    assert "compare" in result["response"]
     assert result["missing_fields"] == []
 
 
@@ -213,7 +213,7 @@ def test_adult_game_recommendation(tmp_path: Path) -> None:
     assert "For a group of 6 adults" in result["response"]
     assert "Classified" in result["response"]
     assert "Bomb Defusal" in result["response"]
-    assert "beginner-friendly" in result["response"]
+    assert "location" in result["response"].lower() or "koramangala" in result["response"].lower()
 
 
 def test_birthday_flow(tmp_path: Path) -> None:
@@ -384,11 +384,11 @@ def test_qualification_flow_completion(tmp_path: Path) -> None:
     memory.update_from_message("We want a corporate event.", "corporate_event")
     first = qualifier.qualify("corporate_event")
     assert not first.qualified
-    assert first.next_question == "How many people will attend?"
-
+    assert first.next_question == "Got it. How many people are joining?"
+    
     qualifier.update_and_qualify("45", "corporate_event")
     second = qualifier.update_and_qualify("Whitefield", "corporate_event")
-    assert second.next_question == "What date are you planning for?"
+    assert second.next_question == "Got it. What date are you planning for?"
 
     qualifier.update_and_qualify("15 June", "corporate_event")
     qualifier.update_and_qualify("Yes, include food", "corporate_event")
@@ -443,13 +443,13 @@ def test_corporate_qualification_completion_end_to_end(tmp_path: Path) -> None:
     qualifier = QualificationAgent(memory)
 
     memory.update_from_message("We need a corporate event.", "corporate_event")
-    assert qualifier.qualify("corporate_event").next_question == "How many people will attend?"
-    assert qualifier.update_and_qualify("50", "corporate_event").next_question == "Which location would you prefer: Koramangala, Whitefield, or JP Nagar?"
-    assert qualifier.update_and_qualify("JP Nagar", "corporate_event").next_question == "What date are you planning for?"
-    assert qualifier.update_and_qualify("18 June", "corporate_event").next_question == "Would you require food and beverages?"
-    assert qualifier.update_and_qualify("Yes", "corporate_event").next_question == "What budget range are you considering? We have Basic, Standard, and Premium options."
-    assert qualifier.update_and_qualify("Premium", "corporate_event").next_question == "May I have your name?"
-    assert qualifier.update_and_qualify("Siddharth", "corporate_event").next_question == "Could I have your phone number so the team can share the details?"
+    assert qualifier.qualify("corporate_event").next_question == "Got it. How many people are joining?"
+    assert qualifier.update_and_qualify("50", "corporate_event").next_question == "Nice. Which location works best: Koramangala, Whitefield, or JP Nagar?"
+    assert qualifier.update_and_qualify("JP Nagar", "corporate_event").next_question == "Got it. What date are you planning for?"
+    assert qualifier.update_and_qualify("18 June", "corporate_event").next_question == "Sounds good. Do you need food and beverages as well?"
+    assert qualifier.update_and_qualify("Yes", "corporate_event").next_question == "Got it. What's the budget range: Basic, Standard, or Premium?"
+    assert qualifier.update_and_qualify("Premium", "corporate_event").next_question == "Perfect. What's your name?"
+    assert qualifier.update_and_qualify("Siddharth", "corporate_event").next_question == "Thanks. What's the best phone number for the booking details?"
     final = qualifier.update_and_qualify("9876543210", "corporate_event")
 
     assert final.qualified
@@ -693,10 +693,10 @@ def test_yes_after_compare_prompt_gives_comparison(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     agent.handle_message("We are six adults visiting Whitefield.")
     first_time = agent.handle_message("We have never done an escape room before.")["response"]
-    assert "Would you like me to compare those two?" in first_time
+    assert "Want me to compare them?" in first_time
     comparison = agent.handle_message("Yes please.")["response"]
-    assert "Murder Mystery is the better starting point" in comparison
-    assert "Hostage is a good alternative" in comparison
+    assert "lean toward Murder Mystery" in comparison
+    assert "Hostage is the more urgent option" in comparison
     assert "Would you like me to compare those two?" not in comparison
 
 
@@ -809,7 +809,7 @@ def test_tts_completes_before_listening_resumes(monkeypatch) -> None:
 
 def test_tts_debug_lifecycle(monkeypatch, capsys) -> None:
     """VoiceOutput.speak() must emit TTS START and TTS END when debug=True."""
-    from src.voice_output import VoiceOutput
+    from src.voice.tts.voice_output import VoiceOutput
 
     class FakeEngine:
         def setProperty(self, *a, **kw):
@@ -821,7 +821,7 @@ def test_tts_debug_lifecycle(monkeypatch, capsys) -> None:
         def runAndWait(self) -> None:
             pass
 
-    import src.voice_output as vo_module
+    import src.voice.tts.voice_output as vo_module
     monkeypatch.setattr(main_module.time, "sleep", lambda _s: None)
 
     vo = VoiceOutput(enabled=True, debug=True)
@@ -914,7 +914,7 @@ def test_phone_capture(tmp_path: Path) -> None:
 
 def test_date_capture_variations(tmp_path: Path) -> None:
     """Bug 6: All date formats must parse correctly."""
-    from src.conversation_memory import ConversationMemory as CM
+    from src.memory.conversation_memory import ConversationMemory as CM
     memory = CM(tmp_path / "session.json")
     cases = {
         "18 June": "18 June",
@@ -978,7 +978,7 @@ def test_routing_exits_after_qualification(tmp_path: Path) -> None:
     """Bug 8: Once qualification is complete, route must not be qualification_agent."""
     memory = ConversationMemory(tmp_path / "session.json")
     qualifier = QualificationAgent(memory)
-    router = __import__("src.router", fromlist=["Router"]).Router()
+    router = __import__("src.orchestration.router", fromlist=["Router"]).Router()
     memory.update_from_message("We need a corporate event.", "corporate_event")
     qualifier.update_and_qualify("50", "corporate_event")
     qualifier.update_and_qualify("JP Nagar", "corporate_event")
@@ -1074,7 +1074,7 @@ def test_invalid_name_input_asks_again(tmp_path: Path) -> None:
 
 def test_date_extraction_voice_natural(tmp_path: Path) -> None:
     """Bug 1: All real voice-spoken date phrases must be parsed to a normalized date."""
-    from src.conversation_memory import ConversationMemory as CM
+    from src.memory.conversation_memory import ConversationMemory as CM
     memory = CM(tmp_path / "session.json")
     cases = {
         # basic ordinal with "of"
@@ -1170,7 +1170,7 @@ def test_location_fuzzy_accepted_by_qualification(tmp_path: Path) -> None:
 
 def test_voice_output_chunking_long_text() -> None:
     """Bug 3: VoiceOutput._split_into_chunks must split long text at sentence boundaries."""
-    from src.voice_output import VoiceOutput
+    from src.voice.tts.voice_output import VoiceOutput
     text = ("This is sentence one. This is sentence two. This is sentence three. "
             "This is sentence four. This is sentence five. This is sentence six.")
     chunks = VoiceOutput._split_into_chunks(text, threshold=80)
@@ -1185,7 +1185,7 @@ def test_voice_output_chunking_long_text() -> None:
 
 def test_voice_output_short_text_not_chunked() -> None:
     """Bug 3: Short responses must not be chunked."""
-    from src.voice_output import VoiceOutput
+    from src.voice.tts.voice_output import VoiceOutput
     text = "Hello!"
     assert VoiceOutput._split_into_chunks(text) == ["Hello!"]
 
@@ -1281,7 +1281,9 @@ def test_interruption_mid_qualification_faq_answered(tmp_path: Path) -> None:
     # Customer asks about kids instead of answering location:
     r = agent.handle_message("Which location would be better for kids?")["response"]
     assert "Whitefield" in r
-    assert "Coming back to" in r or "get back to" in r
+    assert "to finalize" not in r.lower()
+    assert "coming back to" not in r.lower()
+    assert "location" in r.lower() or "koramangala" in r.lower()
     # The qualification field should still be missing/expected next time
     assert agent.memory.data["location"] == ""
 
@@ -1312,7 +1314,7 @@ def test_booking_consent_flow(tmp_path: Path) -> None:
     # Last turn of qualification: phone number
     r = agent.handle_message("9876543210")
     # Should ask for consent
-    assert "Would you like me to check availability" in r["response"]
+    assert "Shall I check availability" in r["response"]
     assert r["route"]["next_agent"] == "inbound_agent" # not handed off yet!
     assert r["route"]["should_handoff"] is False
     assert agent.memory.data["booking_consent_pending"] is True
@@ -1404,7 +1406,7 @@ def test_ollama_availability_and_timeout_safety(tmp_path: Path) -> None:
     assert isinstance(avail, bool)
     
     # In this test, make_agent sets use_ollama=False, but if we create one with True:
-    from src.knowledge_loader import KnowledgeLoader
+    from src.knowledge.knowledge_loader import KnowledgeLoader
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     agent_with_ollama = InboundAgent(
         knowledge_base=knowledge,
@@ -1546,9 +1548,9 @@ def test_case_5_pronominal_which_one_resolution(tmp_path: Path) -> None:
 
 def test_booking_agent_preemption_on_faq(tmp_path: Path) -> None:
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1589,9 +1591,9 @@ def test_booking_agent_preemption_on_faq(tmp_path: Path) -> None:
 
 def test_booking_agent_preemption_on_new_escape_room_inquiry(tmp_path: Path) -> None:
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1639,9 +1641,9 @@ def test_booking_agent_preemption_on_new_escape_room_inquiry(tmp_path: Path) -> 
 
 def test_booking_agent_preemption_on_corporate_event(tmp_path: Path) -> None:
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1687,9 +1689,9 @@ def test_booking_agent_preemption_on_corporate_event(tmp_path: Path) -> None:
 
 def test_booking_agent_preemption_preserves_cancellation(tmp_path: Path) -> None:
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1732,9 +1734,9 @@ def test_live_scenarios_from_user_request(tmp_path: Path) -> None:
       4. I want an event for 15 employees. (new inquiry -> clears and routes to inbound)
     """
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1798,9 +1800,9 @@ def test_live_scenarios_from_user_request(tmp_path: Path) -> None:
 def test_production_voice_stabilization_blockers(tmp_path: Path) -> None:
     """Verifies all Phase 8 stabilization requirements."""
     import main as main_module
-    from src.inbound_agent import InboundAgent
-    from src.booking_agent import BookingAgent
-    from src.knowledge_loader import KnowledgeLoader
+    from src.agents.inbound_agent import InboundAgent
+    from src.agents.booking_agent import BookingAgent
+    from src.knowledge.knowledge_loader import KnowledgeLoader
 
     knowledge = KnowledgeLoader(PROJECT_DIR / "knowledge").load()
     memory = ConversationMemory(tmp_path / "session.json")
@@ -1849,3 +1851,61 @@ def test_production_voice_stabilization_blockers(tmp_path: Path) -> None:
     res_booking, _, active_agent = main_module.dispatch("Dupier", inbound, booking, "booking_agent")
     assert active_agent == "booking_agent"
     assert "sorry" in res_booking.response.lower() or "choose" in res_booking.response.lower() or "available" in res_booking.response.lower()
+
+
+def test_stabilization_voice_fix_regression(tmp_path: Path) -> None:
+    """Regression test for repeated qualification questions & qualification priority."""
+    agent = make_agent(tmp_path)
+    
+    # Step 1: User says: "We are a group of seven friends."
+    # This should set participants = 7
+    res = agent.handle_message("We are a group of seven friends.")
+    assert agent.memory.data["participants"] == 7
+    # Next missing field should be age_group, so it should ask for age group.
+    assert "age group" in res["response"].lower()
+    assert agent.qualification_agent._waiting_for == "age_group"
+    
+    # Step 2: User says: "They are all adults."
+    # This should set age_group = adults
+    res2 = agent.handle_message("They are all adults.")
+    assert agent.memory.data["age_group"] == "adults"
+    # Next missing field should be location, so it should ask for location.
+    assert "location" in res2["response"].lower() or "koramangala" in res2["response"].lower() or "whitefield" in res2["response"].lower() or "jp nagar" in res2["response"].lower()
+    assert agent.qualification_agent._waiting_for == "location"
+
+
+def test_corporate_phrase_leakage_prevention(tmp_path: Path) -> None:
+    """Issue 3: Ensure robotic resume phrases do not leak into customer-facing replies."""
+    agent_corp = make_agent(tmp_path / "corp")
+    agent_corp.handle_message("We need an event for 15 employees.")
+    r_corp = agent_corp.handle_message("Do we need prior experience?")["response"]
+    assert "to finalize the event details" not in r_corp.lower()
+    assert "coming back to the event planning" not in r_corp.lower()
+    assert "location" in r_corp.lower() or "koramangala" in r_corp.lower()
+
+    agent_esc = make_agent(tmp_path / "esc")
+    agent_esc.handle_message("We are a group of 7 friends.")
+    r_esc = agent_esc.handle_message("Do we need prior experience?")["response"]
+    assert "to finalize the details" not in r_esc.lower()
+    assert "coming back to your visit" not in r_esc.lower()
+    assert "age group" in r_esc.lower() or "adults" in r_esc.lower()
+
+
+def test_name_lookup_uses_conversation_memory(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    assert agent.handle_message("my name?").response == "I don't have your name yet."
+
+    agent.memory.data["customer_name"] = "Surabhi"
+    agent.memory.save()
+    assert agent.handle_message("my name?").response == "You're booked under Surabhi."
+
+
+def test_contextual_best_resolves_against_last_room_topic(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("We've never done an escape room before.")
+
+    response = agent.handle_message("Which is best?")["response"]
+
+    assert "Murder Mystery" in response
+    assert "Hostage" in response
+    assert "investigation" in response.lower()
