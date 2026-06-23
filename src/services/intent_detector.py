@@ -262,6 +262,19 @@ class IntentDetector:
                     entities,
                 )
             # Generic booking request without explicit event type; do not force escape_room_inquiry.
+            if (
+                previous_intent == "escape_room_inquiry"
+                or any(location in text for location in ("whitefield", "koramangala", "jp nagar", "jp nagr"))
+                or any(room in text for room in (
+                    "murder mystery", "hostage", "classified", "bomb defusal",
+                    "bomb diffusal", "prison break", "undercover",
+                ))
+            ):
+                return IntentResult(
+                    "escape_room_inquiry", CONF_STRONG,
+                    "booking trigger with escape-room context",
+                    entities,
+                )
             return IntentResult(
                 "general_faq", CONF_FALLBACK,
                 "generic booking trigger",

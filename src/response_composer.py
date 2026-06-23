@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -57,6 +58,13 @@ class ResponseComposer:
             print(f"OPENAI_ENABLED={enabled}")
             print(f"MODEL={self.model}")
 
+        if (
+            state.get("booking_started")
+            and not self._explicit_room_information_request(message)
+            and self._looks_like_room_description(draft)
+        ):
+            return self._booking_progress_response(state)
+
         if not draft.strip() or not enabled:
             return draft
 
@@ -65,7 +73,9 @@ class ResponseComposer:
             for key in (
                 "customer_name", "location", "participants", "age_group",
                 "experience_level", "event_type", "preferred_date",
-                "recommended_option", "current_workflow",
+                "recommended_option", "current_workflow", "selected_slot",
+                "customer_name", "first_name", "last_name", "phone",
+                "booking_started", "booking_id", "booking_ref",
             )
         }
 
@@ -158,6 +168,9 @@ class ResponseComposer:
                 print(f"OpenAI latency per request: {self.last_latency:.4f}s")
                 print("response_source=openai")
             if composed:
+                if self._has_unverified_booking_claim(composed, state):
+                    self.last_error = "unverified_booking_claim_blocked"
+                    return draft
                 self.last_error = ""
                 return composed
             self.last_error = "empty_response"
@@ -178,3 +191,47 @@ class ResponseComposer:
                 print(f"OpenAI latency per request: {self.last_latency:.4f}s")
                 print("response_source=fallback")
         return draft
+
+    @staticmethod
+    def _has_unverified_booking_claim(response: str, state: dict) -> bool:
+        if state.get("booking_id") and state.get("booking_ref"):
+            return False
+        lowered = response.lower()
+        claim_patterns = (
+            r"\b(?:your\s+)?booking\b.{0,40}\b(?:confirmed|booked|finali[sz]ed|complete|completed|all set|is set)\b",
+            r"\b(?:confirmed|booked|finali[sz]ed)\b.{0,25}\b(?:booking|reservation)\b",
+            r"\bbooking details are all set\b",
+        )
+        return any(re.search(pattern, lowered) for pattern in claim_patterns)
+
+    @staticmethod
+    def _explicit_room_information_request(message: str) -> bool:
+        lowered = message.lower()
+        return bool(re.search(r"\b(?:tell|explain|describe|details?|about)\b", lowered))
+
+    @staticmethod
+    def _looks_like_room_description(response: str) -> bool:
+        lowered = response.lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "investigation-style escape room", "spy-themed thriller", "is offered at",
+                "rescue-style escape room", "high-stakes game", "classic escape room",
+            )
+        )
+
+    @staticmethod
+    def _booking_progress_response(state: dict) -> str:
+        prompts = (
+            ("room", "Which escape room would you like to book?"),
+            ("location", "Which Breakout location would you like to visit?"),
+            ("preferred_date", "What date would you like to visit?"),
+            ("selected_slot", "Which available time slot would you like?"),
+            ("first_name", "What is your first name?"),
+            ("last_name", "What is your last name?"),
+            ("phone", "What is the best phone number for the booking?"),
+        )
+        for field, prompt in prompts:
+            if not state.get(field):
+                return prompt
+        return "I have the required booking details and will continue with confirmation."

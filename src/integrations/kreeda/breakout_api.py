@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import os
+import re
 import socket
 import time
 from typing import Any
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_BASE_URL = "https://bs.kreeda.icu"
 _DNS_TIMEOUT = 2.0
+logger = logging.getLogger(__name__)
 
 
 def _dns_check(hostname: str, timeout: float = _DNS_TIMEOUT) -> bool:
@@ -89,10 +92,10 @@ class BreakoutAPI:
             )
 
     def get_locations(self) -> list[dict[str, Any]]:
-        return self._request("GET", "/book/v1.0/locations")
+        return self._as_list(self._request("GET", "/book/v1.0/locations"))
 
     def get_games(self, location_id: str) -> list[dict[str, Any]]:
-        return self._request("GET", "/book/v1.0/games", query={"locationId": location_id})
+        return self._as_list(self._request("GET", "/book/v1.0/games", query={"locationId": location_id}))
 
     def get_available_slots(
         self,
@@ -108,7 +111,7 @@ class BreakoutAPI:
             query["startDate"] = start_date
         if end_date:
             query["endDate"] = end_date
-        return self._request("GET", "/book/v1.0/slots", query=query)
+        return self._as_list(self._request("GET", "/book/v1.0/slots", query=query))
 
     def prepare_booking(self, payload: dict[str, Any]) -> dict[str, Any]:
         required = ("locationId", "gameId", "slotId")
@@ -122,6 +125,55 @@ class BreakoutAPI:
 
     def release_slots(self, slot_ids: list[str]) -> dict[str, Any]:
         return self._request("POST", "/book/v1.0/release-slots", payload={"slotIds": slot_ids})
+
+    def call_agent_tool(
+        self,
+        name: str,
+        payload: dict[str, Any] | None = None,
+        method: str = "POST",
+    ) -> dict[str, Any]:
+        """Invoke a tool exposed by Kreeda's MCP-style REST contract."""
+        result = self._request(method, f"/agent/v1.0/tools/{name}", payload=payload)
+        if not isinstance(result, dict):
+            raise BreakoutAPIError(f"Kreeda tool {name} returned a non-object response.", code="INVALID_RESPONSE")
+        return result
+
+    def get_booking_venues(self) -> list[dict[str, Any]]:
+        return self._as_list(self.call_agent_tool("get_venues", method="GET"))
+
+    def get_booking_games(self, venue_id: str) -> list[dict[str, Any]]:
+        return self._as_list(self.call_agent_tool("get_available_games", {"venueId": venue_id}))
+
+    def search_booking_slots(
+        self,
+        venue_id: str,
+        game_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        iso_date = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        if not iso_date.fullmatch(start_date) or not iso_date.fullmatch(end_date):
+            raise BreakoutAPIError(
+                "Kreeda booking dates must use YYYY-MM-DD format.",
+                code="INVALID_DATE_FORMAT",
+            )
+        return self._as_list(
+            self.call_agent_tool(
+                "search_available_seats",
+                {
+                    "venueId": venue_id,
+                    "gameId": game_id,
+                    "startDate": start_date,
+                    "endDate": end_date,
+                },
+            )
+        )
+
+    def create_instant_cart(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call_agent_tool("create_instant_cart", payload)
+
+    def create_confirmed_booking(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.call_agent_tool("create_booking", payload)
 
     def _request(
         self,
@@ -140,6 +192,7 @@ class BreakoutAPI:
         if query:
             url = f"{url}?{urlencode(query)}"
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        self._log_request(method, path, query, payload)
         request = Request(
             url,
             data=body,
@@ -154,9 +207,14 @@ class BreakoutAPI:
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
+                status = getattr(response, "status", None)
+                if status is None and hasattr(response, "getcode"):
+                    status = response.getcode()
+                self._log_response(path, int(status or 200), raw)
                 return json.loads(raw) if raw else {}
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
+            self._log_response(path, exc.code, raw)
             try:
                 error_payload = json.loads(raw)
                 error = error_payload.get("error", error_payload)
@@ -166,4 +224,67 @@ class BreakoutAPI:
                 message, code = raw or str(exc), "HTTP_ERROR"
             raise BreakoutAPIError(message, code=code, status=exc.code) from exc
         except (URLError, TimeoutError) as exc:
+            logger.warning(
+                "Kreeda API transport error: endpoint=%s error=%s",
+                path,
+                exc,
+            )
             raise BreakoutAPIError(f"Booking API is unavailable: {exc}", code="NETWORK_ERROR") from exc
+
+    @staticmethod
+    def _as_list(response: Any) -> list[dict[str, Any]]:
+        if isinstance(response, list):
+            return [item for item in response if isinstance(item, dict)]
+        if isinstance(response, dict):
+            for key in ("data", "items", "locations", "venues", "games", "slots", "seats", "result", "results"):
+                value = response.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            nested = response.get("response")
+            if isinstance(nested, dict):
+                for key in ("data", "items", "locations", "venues", "games", "slots", "seats", "result", "results"):
+                    value = nested.get(key)
+                    if isinstance(value, list):
+                        return [item for item in value if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _redact_payload(payload: Any) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        redacted = dict(payload)
+        for key in ("customerPhone", "phone", "mobile", "customerEmail", "email"):
+            if key in redacted and redacted[key]:
+                value = str(redacted[key])
+                redacted[key] = f"***{value[-4:]}" if len(value) >= 4 else "***"
+        for key in ("customerFirstName", "customerLastName", "customerName", "name"):
+            if key in redacted and redacted[key]:
+                redacted[key] = f"{str(redacted[key])[:1]}***"
+        return redacted
+
+    @staticmethod
+    def _trim_body(raw: str) -> str:
+        return raw if len(raw) <= 4000 else raw[:4000] + "...<truncated>"
+
+    def _log_request(
+        self,
+        method: str,
+        path: str,
+        query: dict[str, str] | None,
+        payload: dict[str, Any] | None,
+    ) -> None:
+        logger.info(
+            "Kreeda API request: method=%s endpoint=%s query=%s payload=%s",
+            method,
+            path,
+            query or {},
+            json.dumps(self._redact_payload(payload), ensure_ascii=False) if payload is not None else "{}",
+        )
+
+    def _log_response(self, path: str, status: int, raw: str) -> None:
+        logger.info(
+            "Kreeda API response: endpoint=%s status=%s body=%s",
+            path,
+            status,
+            self._trim_body(raw),
+        )

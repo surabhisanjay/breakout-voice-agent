@@ -33,36 +33,28 @@ def test_scenario_a_first_time_friends(tmp_path: Path) -> None:
     
     assert agent.memory.data["participants"] == 7
     assert agent.memory.data["experience_level"] == "beginner"
-    assert "Murder Mystery" in r1["response"] or "Hostage" in r1["response"]
-    assert "age group" in r1["response"].lower() or "adults, kids" in r1["response"].lower()
+    # New flow: age_group question comes first (no recommendation without age_group)
+    assert "age group" in r1["response"].lower() or "adults, kids" in r1["response"].lower() or "adult" in r1["response"].lower()
     
-    # 2. Provide age group
+    # 2. Provide age group — now recommendation should appear
     r2 = agent.handle_message("mostly adults")
     assert agent.memory.data["age_group"] == "adults"
-    assert "bangalore locations" in r2["response"].lower()
+    assert "Murder Mystery" in r2["response"] or "Hostage" in r2["response"]
     
     # 3. Provide location
     r3 = agent.handle_message("Koramangala")
     assert agent.memory.data["location"] == "Koramangala"
     assert "compare" in r3["response"].lower()
     
-    # 4. Provide date
+    # 4. Choose a concrete room and provide date
+    agent.handle_message("Murder Mystery")
     r4 = agent.handle_message("18 June")
     assert agent.memory.data["preferred_date"] == "18 June"
-    assert "name" in r4["response"].lower()
-    
-    # 5. Provide name
-    r5 = agent.handle_message("My name is Siddharth")
-    assert agent.memory.data["customer_name"] == "Siddharth"
-    assert "phone" in r5["response"].lower()
-    
-    # 6. Provide phone
-    r6 = agent.handle_message("Phone is 9876543210")
-    assert agent.memory.data["phone"] == "9876543210"
-    
-    # Check that qualification is complete and booking consent is requested
+    assert "check availability" in r4["response"].lower()
+    # Contact is collected by BookingAgent after a verified slot.
     assert agent.memory.handoff_ready("escape_room_inquiry")
-    assert "check availability" in r6["response"].lower()
+    assert not agent.memory.data["customer_name"]
+    assert not agent.memory.data["phone"]
 
 
 def test_scenario_b_couple_booking(tmp_path: Path) -> None:
@@ -110,14 +102,12 @@ def test_scenario_c_family_with_children(tmp_path: Path) -> None:
     assert agent.memory.data["location"] == "Whitefield"
     assert "Murder Mystery" in r3["response"] or "Hostage" in r3["response"]
     
-    # 4. Complete contact collection
-    r4 = agent.handle_message("I am Siddharth")
-    assert agent.memory.data["customer_name"] == "Siddharth"
-    assert "phone" in r4["response"].lower()
-    
-    r5 = agent.handle_message("Phone is 9876543210")
-    assert agent.memory.data["phone"] == "9876543210"
-    assert "check availability" in r5["response"].lower()
+    # 4. Choose a room; availability precedes contact collection.
+    agent.handle_message("Murder Mystery")
+    r4 = agent.handle_message("18 June")
+    assert "check availability" in r4["response"].lower()
+    assert not agent.memory.data["customer_name"]
+    assert not agent.memory.data["phone"]
 
 
 def test_scenario_d_corporate_event(tmp_path: Path) -> None:
@@ -177,8 +167,9 @@ def test_scenario_f_explain_all_rooms_interruption(tmp_path: Path) -> None:
     # Interrupted with rooms explanation request
     r2 = agent.handle_message("What rooms do you have?")
     assert "Murder Mystery" in r2["response"] or "Hostage" in r2["response"]
-    # Check that it resumes qualification
-    assert "age group" in r2["response"].lower()
+    # Answer the FAQ first; preserve the missing age field for the next turn.
+    assert "age group" not in r2["response"].lower()
+    assert agent.memory.data["age_group"] == ""
 
 
 def test_scenario_g_room_modification(tmp_path: Path) -> None:
@@ -481,5 +472,4 @@ def test_final_live_test_bugs_regression(tmp_path: Path, monkeypatch) -> None:
         assert "great" in res_sub.response.lower() or "thanks for choosing" in res_sub.response.lower() or "have a wonderful day" in res_sub.response.lower()
         assert "anything you'd like to know" not in res_sub.response.lower()
         assert "food options" not in res_sub.response.lower()
-
 

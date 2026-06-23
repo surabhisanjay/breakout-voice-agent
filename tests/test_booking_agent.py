@@ -37,16 +37,17 @@ from src.tools.booking_tool import BookingTool  # noqa: E402
 def make_memory(tmp_path: Path, overrides: dict | None = None) -> ConversationMemory:
     memory = ConversationMemory(tmp_path / "session.json")
     defaults = {
-        "intent": "corporate_event",
-        "event_type": "Corporate Event",
+        "intent": "escape_room_inquiry",
+        "event_type": "Escape Room",
         "location": "Koramangala",
         "preferred_date": "18 June",
-        "participants": 20,
-        "company_size": 20,
+        "participants": 4,
+        "company_size": "",
         "age_group": "adults",
+        "room": "Murder Mystery",
         "food_required": True,
         "budget_range": "premium",
-        "customer_name": "Siddharth",
+        "customer_name": "Siddharth Rao",
         "phone": "9876543210",
     }
     if overrides:
@@ -343,7 +344,7 @@ def test_as_state_round_trip(tmp_path: Path) -> None:
     memory2.from_state(original_state)
 
     assert memory2.data["location"] == "Koramangala"
-    assert memory2.data["customer_name"] == "Siddharth"
+    assert memory2.data["customer_name"] == "Siddharth Rao"
     assert memory2.data["preferred_date"] == "18 June"
 
 
@@ -353,7 +354,7 @@ def test_booking_agent_state_in_response(tmp_path: Path) -> None:
     result = agent.handle_message("ready")
 
     assert result.state["location"] == "Koramangala"
-    assert result.state["customer_name"] == "Siddharth"
+    assert result.state["customer_name"] == "Siddharth Rao"
 
 
 # ------------------------------------------------------------------ #

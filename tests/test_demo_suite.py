@@ -69,26 +69,21 @@ def turn(agent: InboundAgent, message: str) -> str:
 def test_scenario_1_first_time_friends(tmp_path: Path) -> None:
     """
     Customer reveals: 7 friends, first-timers.
-    Expected: recommendation comes first, no re-ask for participants,
-              one follow-up question (age_group or location).
+    New flow: age_group question comes first, then recommendation
+    after age_group is provided.
     """
     agent = make_agent(tmp_path)
     response = turn(agent, "We are seven friends and none of us has ever done an escape room before.")
 
-    # Recommendation must come before follow-up question
-    assert "Murder Mystery" in response, f"Expected Murder Mystery: {response}"
+    # New flow: age_group question comes first (no recommendation without age_group)
+    assert "adult" in response.lower() or "kids" in response.lower() or "age" in response.lower(), (
+        f"Expected age group question: {response}"
+    )
 
     # Must not re-ask for participants
     assert "how many people" not in response.lower(), (
         f"Re-asked for participants already known to be 7: {response}"
     )
-
-    # Must ask only one follow-up (age_group or location)
-    assert (
-        "age" in response.lower()
-        or "location" in response.lower()
-        or "adults" in response.lower()
-    ), f"Expected one follow-up question: {response}"
 
     # Memory must record participants = 7
     assert agent.memory.data.get("participants") == 7, (

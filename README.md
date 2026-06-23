@@ -368,6 +368,60 @@ curl http://127.0.0.1:8000/memory/demo-1
 
 Each `session_id` gets its own persisted memory file under `memory/api_sessions/`.
 
+## Live Kreeda Booking Verification
+
+Set the booking credentials in `.env`:
+
+```bash
+BOOKING_BASE_URL=https://bs.kreeda.icu
+BOOKING_API_KEY=your-real-key
+BOOKING_PROVIDER=auto
+```
+
+Use `BOOKING_PROVIDER=simulator` only when you explicitly want offline simulator bookings.
+
+Start the FastAPI backend:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Expected startup log:
+
+```text
+BOOKING_PROVIDER=live-configured
+```
+
+Expected booking logs during a live booking:
+
+```text
+Kreeda provider initialized successfully
+Kreeda availability request
+Kreeda availability response
+Kreeda booking request
+Kreeda booking response
+```
+
+If live mode falls back, logs will include:
+
+```text
+Simulator fallback reason: ...
+```
+
+Test booking scenario:
+
+1. Start a new Vapi or API session.
+2. Ask to book an escape room.
+3. Provide group size, age group, location, date, time, name, and phone.
+4. Select one of the available slots returned by the agent.
+5. Confirm that the response contains a checkout or booking reference returned by Kreeda.
+
+Confirm in Kreeda:
+
+1. Open the Kreeda dashboard.
+2. Search by the customer phone number or booking reference.
+3. Verify location, date, slot time, room/game, and customer name match the test conversation.
+
 ## Notes for Production Hardening
 
 - Replace regex extraction with validated forms or a local NLU model if needed.

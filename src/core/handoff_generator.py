@@ -65,6 +65,8 @@ class HandoffGenerator:
             "email": memory.get("email", ""),
             "sentiment": memory.get("sentiment", "neutral"),
             "recommended_option": recommended_option,
+            "room": memory.get("room", ""),
+            "selected_slot": memory.get("selected_slot", ""),
             "summary": " ".join(summary_bits).strip(),
         }
 

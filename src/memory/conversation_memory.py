@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 
+logger = logging.getLogger(__name__)
+
+
 DEFAULT_MEMORY = {
     "customer_name": "",
+    "first_name": "",
+    "last_name": "",
     "phone": "",
     "email": "",
     "location": "",
     "participants": "",
+    "participants_min": "",
+    "participants_max": "",
     "age_group": "",
     "age_detail": "",
     "experience_level": "",
@@ -20,12 +28,20 @@ DEFAULT_MEMORY = {
     "company_size": "",
     "event_type": "",
     "preferred_date": "",
+    "preferred_time": "",
     "food_required": "",
     "budget_range": "",
     "room": "",
     "intent": "",
     "sentiment": "neutral",
+    "sentiment_confidence": 0.0,
+    "sentiment_reason": "",
+    "sentiment_history": [],
+    "escalation_state": {"escalate": False, "reason": "", "summary": ""},
+    "escalation_history": [],
+    "failed_answer_count": 0,
     "recommended_option": "",
+    "selected_slot": "",
     # ------------------------------------------------------------------ #
     # Workflow state — tracks which mode the agent is currently in.       #
     # Values: "general" | "qualification" | "awaiting_booking" | "booking"#
@@ -33,6 +49,7 @@ DEFAULT_MEMORY = {
     "current_workflow": "general",
     "conversation_mode": "sales",
     "booking_consent_pending": False,
+    "booking_started": False,
     "conversation": [],
     "discussed_options": [],
     "last_discussed_topic": "",
@@ -47,7 +64,7 @@ DEFAULT_MEMORY = {
 class ConversationMemory:
     LOCATIONS = ("Koramangala", "Whitefield", "JP Nagar")
     FLOW_FIELDS = {
-        "escape_room_inquiry": ["participants", "location", "age_group"],
+        "escape_room_inquiry": ["participants", "age_group", "location"],
         "birthday_party": ["location", "participants", "preferred_date"],
         "corporate_event": ["location", "company_size", "preferred_date"],
         "bachelor_party": ["participants", "location", "preferred_date"],
@@ -88,9 +105,14 @@ class ConversationMemory:
         merged.update(loaded)
         if not isinstance(merged.get("conversation"), list):
             merged["conversation"] = []
-        for key in ["discussed_options", "customer_preferences", "concerns", "audit_trail"]:
+        for key in [
+            "discussed_options", "customer_preferences", "concerns", "audit_trail",
+            "sentiment_history", "escalation_history",
+        ]:
             if not isinstance(merged.get(key), list):
                 merged[key] = []
+        if not isinstance(merged.get("escalation_state"), dict):
+            merged["escalation_state"] = copy.deepcopy(DEFAULT_MEMORY["escalation_state"])
         return merged
 
     def reset(self) -> None:
@@ -104,6 +126,8 @@ class ConversationMemory:
         for field in [
             "location",
             "participants",
+            "participants_min",
+            "participants_max",
             "age_group",
             "experience_level",
             "company_size",
@@ -145,7 +169,28 @@ class ConversationMemory:
             is_explicit_change = (
                 intent_changed or
                 any(indicator in lowered_msg for indicator in change_indicators) or
-                len(lowered_msg.split()) <= 2
+                len(lowered_msg.split()) <= 2 or
+                (
+                    field == "participants"
+                    and bool(
+                        re.search(
+                            r"\b(?:\d{1,4}\s*(?:people|persons|guests|participants|players|members|friends|adults)"
+                            r"|we\s+are\s+(?:actually|now)?\s*\d{1,4}|group\s+of\s+\d{1,4})\b",
+                            lowered_msg,
+                        )
+                    )
+                ) or
+                (
+                    field == "age_group"
+                    and any(
+                        phrase in lowered_msg
+                        for phrase in (
+                            "all adults", "we are adults", "we're adults", "adult group",
+                            "all kids", "we are kids", "we're kids", "kids group",
+                            "all teens", "we are teens", "we're teens", "teen group",
+                        )
+                    )
+                )
             )
             
             if is_explicit_change:
@@ -170,7 +215,16 @@ class ConversationMemory:
                     return False
 
         # Apply update
+        if field == "participants" and old_value not in ("", new_value):
+            logger.info("PARTICIPANT_OVERRIDE=true")
+            logger.info("OLD_PARTICIPANTS=%s", old_value)
+            logger.info("NEW_PARTICIPANTS=%s", new_value)
         self.data[field] = new_value
+        if field == "age_group":
+            self.data["age_detail"] = ""
+        if field == "participants":
+            self.data["participants_min"] = ""
+            self.data["participants_max"] = ""
         if field == "participants" and self.data.get("intent") == "corporate_event":
             self.data["company_size"] = new_value
         elif field == "company_size":
@@ -180,17 +234,18 @@ class ConversationMemory:
         if "audit_trail" not in self.data or not isinstance(self.data["audit_trail"], list):
             self.data["audit_trail"] = []
             
-        self.data["audit_trail"].append({
-            "field": field,
-            "old_value": old_value,
-            "new_value": new_value,
-            "type": update_type
-        })
+        if field != "recommended_option":
+            self.data["audit_trail"].append({
+                "field": field,
+                "old_value": old_value,
+                "new_value": new_value,
+                "type": update_type
+            })
         self.save()
         return True
 
-    def update_from_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> None:
-        self.merge_message(message, intent, recommendation, expected_field)
+    def update_from_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> dict[str, Any]:
+        return self.merge_message(message, intent, recommendation, expected_field)
 
     def merge_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> dict[str, Any]:
         self._intent_changing = bool(intent and intent != self.data.get("intent", ""))
@@ -235,12 +290,18 @@ class ConversationMemory:
             if self.set_field("room", room, message, expected_field):
                 extracted["room"] = room
 
-        participants = self._extract_participants(lowered)
+        participant_range = self._extract_participant_range(lowered)
+        participants = participant_range[1] if participant_range else self._extract_participants(lowered)
         if participants:
             if self.set_field("participants", participants, message, expected_field):
                 extracted["participants"] = participants
+            if participant_range:
+                self.data["participants_min"], self.data["participants_max"] = participant_range
 
-        age_group, age_detail = self._extract_age_group(lowered)
+        age_group, age_detail = self._extract_age_group(
+            lowered,
+            allow_bare_range=expected_field == "age_group",
+        )
         if age_group:
             if self.set_field("age_group", age_group, message, expected_field):
                 extracted["age_group"] = age_group
@@ -265,8 +326,16 @@ class ConversationMemory:
 
         preferred_date = self._extract_preferred_date(text)
         if preferred_date:
+            logger.info("DATE_EXTRACTED=%s", preferred_date)
+            logger.info("DATE_NORMALIZED=%s", preferred_date)
             if self.set_field("preferred_date", preferred_date, message, expected_field):
                 extracted["preferred_date"] = preferred_date
+            logger.info("DATE_PERSISTED=%s", self.data.get("preferred_date", ""))
+
+        preferred_time = self._extract_time(text)
+        if preferred_time:
+            if self.set_field("preferred_time", preferred_time, message, expected_field):
+                extracted["preferred_time"] = preferred_time
 
         food_required = self._extract_food_required(lowered)
         if food_required != "":
@@ -289,6 +358,31 @@ class ConversationMemory:
         self.data.setdefault("conversation", []).append({"role": role, "content": content})
         self.data["conversation"] = self.data["conversation"][-30:]
         self.save()
+        if role == "agent":
+            snapshot = {
+                key: self.data.get(key, "")
+                for key in (
+                    "intent", "participants", "participants_min", "participants_max",
+                    "age_group", "experience_level", "location", "preferred_date",
+                    "room", "selected_slot", "booking_id", "booking_ref",
+                )
+            }
+            snapshot["has_customer_name"] = bool(self.data.get("customer_name"))
+            snapshot["has_phone"] = bool(self.data.get("phone"))
+            logger.info("MEMORY_SNAPSHOT=%s", json.dumps(snapshot, sort_keys=True))
+            logger.info(
+                "MISSING_FIELDS=%s",
+                json.dumps(self._diagnostic_missing_fields()),
+            )
+
+    def _diagnostic_missing_fields(self) -> list[str]:
+        if self.data.get("intent") == "escape_room_inquiry":
+            required = [
+                "participants", "age_group", "location", "room", "preferred_date",
+                "selected_slot", "first_name", "last_name", "phone", "booking_id",
+            ]
+            return [field for field in required if not self.data.get(field)]
+        return self.missing_fields(self.data.get("intent", ""), include_contact=True)
 
     def missing_fields(self, intent: str | None = None, include_contact: bool = False) -> list[str]:
         active_intent = intent or self.data.get("intent", "")
@@ -305,13 +399,15 @@ class ConversationMemory:
         if active_intent in ("", "general_faq"):
             return False
         if active_intent == "escape_room_inquiry":
-            if not self.data.get("preferred_date") or not self.data.get("recommended_option"):
-                return False
+            return all(
+                self.data.get(field)
+                for field in ("participants", "age_group", "location", "preferred_date", "room")
+            )
         
         from ..agents.qualification_agent import QualificationAgent
         required = list(QualificationAgent.REQUIRED_BY_INTENT.get(active_intent, []))
         
-        # Customer name and phone are always required for handoff to check booking
+        # Package/event qualification still collects contact before its handoff.
         for field in ["customer_name", "phone"]:
             if field not in required:
                 required.append(field)
@@ -324,9 +420,19 @@ class ConversationMemory:
         return True
 
     def booking_ready(self) -> bool:
-        required = ("age_group", "location", "preferred_date", "customer_name", "phone")
+        required = [
+            "age_group", "location", "preferred_date", "selected_slot",
+            "phone",
+        ]
+        if self.data.get("intent") == "escape_room_inquiry":
+            required.append("room")
+        name_parts = str(self.data.get("customer_name", "")).split()
+        has_first_name = bool(self.data.get("first_name") or name_parts)
+        has_last_name = bool(self.data.get("last_name") or len(name_parts) > 1)
         return bool(
             (self.data.get("participants") or self.data.get("company_size"))
+            and has_first_name
+            and has_last_name
             and all(self.data.get(field) for field in required)
         )
 
@@ -364,6 +470,20 @@ class ConversationMemory:
 
     @staticmethod
     def normalize_number_words(text: str) -> str:
+        compound_ordinals = {
+            "twenty first": 21,
+            "twenty second": 22,
+            "twenty third": 23,
+            "twenty fourth": 24,
+            "twenty fifth": 25,
+            "twenty sixth": 26,
+            "twenty seventh": 27,
+            "twenty eighth": 28,
+            "twenty ninth": 29,
+        }
+        for phrase, value in compound_ordinals.items():
+            text = re.sub(rf"\b{phrase}\b", str(value), text, flags=re.IGNORECASE)
+
         number_words = {
             "one": 1,
             "two": 2,
@@ -397,21 +517,135 @@ class ConversationMemory:
     @staticmethod
     def _extract_name(text: str) -> str:
         patterns = [
-            r"\bmy name is\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bi am\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bi'm\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bthis is\s+([A-Za-z][A-Za-z ]{1,40})",
+            r"\bname\s*:\s*([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|contact\s+number|phone|mobile|$))",
+            r"\bactually\s+(?:use|make it|change(?:\s+it)?\s+to)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|$))",
+            r"\bmy first name is\s+([A-Za-z]+)(?=\s*(?:[.;,]|$))",
+            r"\bmy name is\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bname\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|$))",
+            r"\bbook under\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|$))",
+            r"\bthis is\s+(my\s+first\s+time)(?=\s*(?:[.;,]|$))",
+            r"\bi am\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bi'm\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bthis is\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
-                return " ".join(match.group(1).split()).title()
+                candidate = " ".join(match.group(1).split()).title()
+                logger.info("NAME_CANDIDATE=%s", candidate)
+                if ConversationMemory._is_plausible_name(candidate):
+                    logger.info("NAME_ACCEPTED=%s", candidate)
+                    logger.info("CUSTOMER_NAME_EXTRACTED=%s", candidate)
+                    return candidate
+                logger.info("NAME_REJECTED=%s", candidate)
         return ""
 
     @staticmethod
+    def _is_plausible_name(candidate: str) -> bool:
+        words = [word.lower() for word in candidate.split()]
+        if not 1 <= len(words) <= 3:
+            return False
+        rejected_words = {
+            "a", "an", "the", "my", "our", "your", "first", "time", "beginner",
+            "adult", "adults", "kid", "kids", "teen", "teens", "friend", "friends",
+            "booking", "book", "room", "escape", "ready", "tomorrow", "today", "friday",
+            "phone", "number", "available", "availability",
+            "frustrated", "angry", "upset", "furious", "confused", "unhappy",
+            "injured", "hurt", "waiting", "complaining",
+            # Booking-domain words that are not plausible names
+            "game", "games", "slot", "slots", "date", "yes", "no", "ok", "okay",
+            "sure", "wait", "hi", "hello", "hey", "please", "thanks", "thank",
+            "change", "cancel", "reschedule", "confirm", "booking", "reserve",
+        }
+        return all(
+            word.isalpha() and len(word) >= 2 and word not in rejected_words
+            for word in words
+        )
+
+    @staticmethod
     def _extract_phone(text: str) -> str:
+        spoken_digits = ConversationMemory._extract_spoken_phone(text)
+        if spoken_digits:
+            logger.info("PHONE_EXTRACTED=%s", spoken_digits)
+            return spoken_digits
+
+        labelled = re.search(
+            r"\b(?:phone|contact\s+number|mobile)(?:\s+number)?\s*(?::|is|-)?\s*"
+            r"(\+?[0-9][0-9\s-]{6,16}[0-9])\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if labelled:
+            digits = re.sub(r"\D", "", labelled.group(1))
+            if digits.startswith("91") and len(digits) == 12:
+                digits = digits[2:]
+            logger.info("PHONE_EXTRACTED=%s", digits)
+            return digits
         match = re.search(r"(?:(?:\+91[\s-]?)|0)?([6-9]\d{9})\b", text.replace(" ", ""))
-        return match.group(1) if match else ""
+        if match:
+            logger.info("PHONE_EXTRACTED=%s", match.group(1))
+            return match.group(1)
+        return ""
+
+    @staticmethod
+    def _extract_spoken_phone(text: str) -> str:
+        lowered = text.lower()
+        if not re.search(r"\b(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine|double|triple)\b", lowered):
+            return ""
+        tokens = re.findall(r"[a-z]+|\d", lowered)
+        digit_words = {
+            "zero": "0", "oh": "0", "o": "0",
+            "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+            "six": "6", "seven": "7", "eight": "8", "nine": "9",
+        }
+        digits: list[str] = []
+        multiplier = 1
+        seen_phone_context = False
+        context_words = {"phone", "mobile", "contact", "number", "call", "whatsapp", "is"}
+        for token in tokens:
+            if token in context_words:
+                seen_phone_context = True
+                continue
+            if token == "double":
+                multiplier = 2
+                continue
+            if token == "triple":
+                multiplier = 3
+                continue
+            if token.isdigit():
+                digits.append(token)
+                multiplier = 1
+                continue
+            digit = digit_words.get(token)
+            if digit is not None:
+                digits.extend([digit] * multiplier)
+                multiplier = 1
+                continue
+            multiplier = 1
+
+        number = "".join(digits)
+        if number.startswith("91") and len(number) == 12:
+            number = number[2:]
+        if 7 <= len(number) <= 12 and (seen_phone_context or len(re.findall(r"\b(?:zero|oh|o|one|two|three|four|five|six|seven|eight|nine|double|triple)\b", lowered)) >= 4):
+            return number
+        return ""
+
+    @staticmethod
+    def _extract_time(text: str) -> str:
+        lowered = text.lower().strip()
+        words = {
+            "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+            "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+            "eleven": "11", "twelve": "12",
+        }
+        for word, digit in words.items():
+            lowered = re.sub(rf"\b{word}\b", digit, lowered)
+        match = re.search(r"\b(\d{1,2})(?::(\d{2})?)?\s*(am|pm)\b", lowered)
+        if match:
+            hour = str(int(match.group(1)))
+            minute = match.group(2) or "00"
+            return f"{hour}:{minute} {match.group(3).upper()}"
+        return ""
 
     @staticmethod
     def _extract_email(text: str) -> str:
@@ -420,10 +654,14 @@ class ConversationMemory:
 
     @classmethod
     def _extract_location(cls, lowered: str) -> str:
+        exact_matches = [
+            location for location in cls.LOCATIONS if location.lower() in lowered
+        ]
+        if len(exact_matches) > 1:
+            return ""
         # Exact match first
-        for location in cls.LOCATIONS:
-            if location.lower() in lowered:
-                return location
+        if exact_matches:
+            return exact_matches[0]
         if "jp" in lowered and "nagar" in lowered:
             return "JP Nagar"
         # Fuzzy fallback for Whisper transcription errors
@@ -542,7 +780,7 @@ class ConversationMemory:
             r"\b(\d{1,4})\s*(people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues)\b",
             r"\bgroup of\s+(\d{1,4})\b",
             r"\bfor\s+(\d{1,4})\b",
-            r"\bwe are\s+(\d{1,4})\b",
+            r"\bwe are\s+(?:(?:actually|now)\s+)?(\d{1,4})\b",
             r"\b(\d{1,4})\s*of us\b",
         ]
         for pattern in patterns:
@@ -567,7 +805,19 @@ class ConversationMemory:
         return ""
 
     @staticmethod
-    def _extract_age_group(lowered: str) -> tuple[str, str]:
+    def _extract_participant_range(lowered: str) -> tuple[int, int] | None:
+        match = re.search(
+            r"\b(\d{1,4})\s*(?:to|[-–—])\s*(\d{1,4})\s*"
+            r"(?:people|persons|guests|participants|players|members|friends|adults)\b",
+            lowered,
+        )
+        if not match:
+            return None
+        low, high = sorted((int(match.group(1)), int(match.group(2))))
+        return low, high
+
+    @staticmethod
+    def _extract_age_group(lowered: str, allow_bare_range: bool = False) -> tuple[str, str]:
         # High-confidence quick checks first
         if any(phrase in lowered for phrase in ("all adults", "mostly adults", "only adults", "we are all adults", "adult group", "everyone is an adult")):
             return "adults", ""
@@ -586,14 +836,19 @@ class ConversationMemory:
                 if age_val >= 18:
                     return "adults", f"{age_val}+"
 
-        # Accept range patterns:
+        # Numeric ranges are ages only with explicit age context. Without this
+        # guard, group sizes ("10 to 15 people") and times ("3 to 6 PM")
+        # corrupt age_group and age_detail.
+        has_age_context = allow_bare_range or bool(
+            re.search(r"\b(?:age|ages|aged|years?\s+old|year-olds?|kids?|children|teens?)\b", lowered)
+        )
         range_patterns = [
-            r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\b",
             r"\b(?:ages?|age)\s+(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\s*years?\b",
             r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\s*years?\b",
+            r"\b(\d{1,2})\s*(?:to|[-–—])\s*(\d{1,2})\b",
         ]
 
-        for pattern in range_patterns:
+        for pattern in range_patterns if has_age_context else ():
             match = re.search(pattern, lowered)
             if match:
                 low = int(match.group(1))
@@ -714,6 +969,7 @@ class ConversationMemory:
         stripped = _PREFIX_RE.sub("", lowered).strip()
 
         relative_terms = [
+            "day after tomorrow",   # must come BEFORE "tomorrow" (substring guard)
             "today",
             "tomorrow",
             "this weekend",

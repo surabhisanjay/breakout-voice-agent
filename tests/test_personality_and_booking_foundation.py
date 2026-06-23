@@ -212,7 +212,7 @@ def test_openai_timeout_reliability(monkeypatch, tmp_path) -> None:
     mem = ConversationMemory(tmp_path / "session.json")
     agent = InboundAgent(kb, mem, PROMPT_PATH, use_openai=True)
 
-    result = agent.handle_message("We are seven friends and none of us have done an escape room before.")
+    result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
     assert "Murder Mystery" in result.response or "Hostage" in result.response
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error
@@ -249,7 +249,7 @@ def test_openai_connection_failure_reliability(monkeypatch, tmp_path) -> None:
     mem = ConversationMemory(tmp_path / "session.json")
     agent = InboundAgent(kb, mem, PROMPT_PATH, use_openai=True)
 
-    result = agent.handle_message("We are seven friends and none of us have done an escape room before.")
+    result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
     assert "Murder Mystery" in result.response or "Hostage" in result.response
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error
@@ -288,7 +288,7 @@ def test_openai_auth_failure_reliability(monkeypatch, tmp_path) -> None:
     mem = ConversationMemory(tmp_path / "session.json")
     agent = InboundAgent(kb, mem, PROMPT_PATH, use_openai=True)
 
-    result = agent.handle_message("We are seven friends and none of us have done an escape room before.")
+    result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
     assert "Murder Mystery" in result.response or "Hostage" in result.response
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error

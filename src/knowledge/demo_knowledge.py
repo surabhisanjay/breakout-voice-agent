@@ -36,13 +36,30 @@ def get_demo_answer(message: str) -> str:
             "6. Undercover: A spy adventure full of hidden doors and plot twists."
         )
 
+    # 3a. Duration / how long
+    if any(term in lowered for term in (
+        "how long", "duration", "how much time", "long is the game", "long does it take",
+        "long is the experience", "how many minutes", "time limit"
+    )):
+        return (
+            "Each escape room session is 50 minutes long. We recommend arriving at least 10-15 minutes "
+            "early so you have time for the welcome briefing before your game starts."
+        )
+
     # 3b. Rules & how it works
     if any(term in lowered for term in (
-        "explain rules", "what are the rules", "how does it work", "what happens inside",
+        "explain rules", "explain the rules", "what are the rules", "how does it work",
+        "how does the escape room work", "what happens inside",
         "first time here"
     )):
         return (
             "Breakout Escape Rooms are immersive, real-life adventure games where you and your team are locked in a themed room and have 50 minutes to solve puzzles, find clues, and complete a mission to escape. Our team briefs you beforehand, monitors the game, and can assist if needed."
+        )
+
+    if "food" in lowered or "menu" in lowered:
+        return (
+            "Food options include continental food, build-your-menu options, mix snack boxes, "
+            "hi-tea options, and Indian buffet options for corporate events."
         )
 
     # 4. Explain specific rooms

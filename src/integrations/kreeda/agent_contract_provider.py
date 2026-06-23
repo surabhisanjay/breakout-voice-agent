@@ -20,14 +20,16 @@ def _dns_check(hostname: str, timeout: float = 3.0) -> bool:
     call (which ignores Python socket timeouts) cannot block the main thread
     for more than *timeout* seconds.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(socket.getaddrinfo, hostname, 443,
-                             socket.AF_UNSPEC, socket.SOCK_STREAM)
-        try:
-            future.result(timeout=timeout)
-            return True
-        except (concurrent.futures.TimeoutError, socket.gaierror, OSError):
-            return False
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(socket.getaddrinfo, hostname, 443,
+                         socket.AF_UNSPEC, socket.SOCK_STREAM)
+    try:
+        future.result(timeout=timeout)
+        return True
+    except (concurrent.futures.TimeoutError, socket.gaierror, OSError):
+        return False
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 class AgentContractAPIError(RuntimeError):

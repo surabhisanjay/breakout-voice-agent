@@ -113,8 +113,13 @@ def test_demo_scenario_topic_switch_to_faq_preserves_intake(tmp_path: Path) -> N
 
 def test_demo_scenario_recommendation_precedes_qualification(tmp_path: Path) -> None:
     agent, composer = make_agent(tmp_path)
+    # New flow: without age_group, agent asks for it first
     result = assert_composed(agent, composer, "We are 7 friends and none of us have played before.", "recommendation")
-    assert result.response.index("Murder Mystery") < result.response.index("adults, kids, or a mix")
+    assert "adult" in result.response.lower() or "kids" in result.response.lower() or "age" in result.response.lower()
+
+    # After providing age_group, recommendation appears
+    result2 = agent.handle_message("We are all adults.")
+    assert "Murder Mystery" in result2.response
 
 
 def test_demo_scenario_multiple_questions(tmp_path: Path) -> None:

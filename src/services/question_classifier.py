@@ -113,6 +113,11 @@ _RECOMMENDATION_PHRASES: Tuple[str, ...] = (
 # information, not statements of fact (e.g. "first time" alone could be a
 # statement). Statements without "?" should NOT be classified as questions.
 _FAQ_PHRASES: Tuple[str, ...] = (
+    "tell me about escape rooms",
+    "tell me about your escape rooms",
+    "tell me more about your escape rooms",
+    "explain escape rooms",
+    "what are escape rooms",
     "how does it work",
     "how does this work",
     "how do escape rooms work",
@@ -480,6 +485,19 @@ class QuestionClassifier:
 
     @staticmethod
     def _extract_faq_topic(lowered: str) -> str:
+        if any(
+            phrase in lowered
+            for phrase in (
+                "tell me about escape rooms",
+                "tell me about your escape rooms",
+                "tell me more about your escape rooms",
+                "how do escape rooms work",
+                "explain escape rooms",
+                "what are escape rooms",
+                "what is an escape room",
+            )
+        ):
+            return "escape room education"
         if "lock" in lowered or "locked" in lowered:
             return "are we locked in"
         if "fail" in lowered or "don't escape" in lowered:

@@ -96,16 +96,67 @@ try:
 except ImportError:
     _HAS_LANGGRAPH = False
 
-from ..agents.booking_agent import BookingError, EscalationRequired
-from ..orchestration.booking_orchestrator import BookingOrchestrator
+from ...agents.booking_agent import BookingError, EscalationRequired
+from ...orchestration.booking_orchestrator import BookingOrchestrator
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..orchestration.booking_orchestrator import BookingOrchestrator as BookingAgent
+    from ...orchestration.booking_orchestrator import BookingOrchestrator as BookingAgent
 
 def booking_node_handler(handoff: Dict[str, Any], require_payment: bool = False) -> Dict[str, Any]:
-    """Handle a handoff payload and attempt to create a booking using run_booking_workflow and BookingOrchestrator."""
+    """Run the production booking path only after the caller selected a slot."""
+    required = (
+        "customer_name", "phone", "location", "participants", "age_group",
+        "preferred_date", "selected_slot",
+    )
+    missing = [field for field in required if not handoff.get(field)]
+    if missing:
+        return {
+            "status": "failed",
+            "booking_ref": None,
+            "payment_required": require_payment,
+            "payment_payload": None,
+            "error": f"missing_required_fields: {missing}",
+            "log": ["booking_node_handler: booking prerequisites not met"],
+        }
+
+    room = str(handoff.get("room") or "").strip()
+    recommendation = str(handoff.get("recommended_option") or "").lower()
+    if not room and any(term in recommendation for term in ("scavenger", "karaoke", "showstopper", "package")):
+        return {
+            "status": "failed",
+            "booking_ref": None,
+            "payment_required": require_payment,
+            "payment_payload": None,
+            "error": "package_inquiry_requires_event_team",
+            "log": ["booking_node_handler: package inquiry not sent to Kreeda game lookup"],
+        }
+
     orchestrator = BookingOrchestrator()
-    return run_booking_workflow(handoff, require_payment=require_payment, agent=orchestrator)
+    availability = orchestrator.check_availability(
+        str(handoff["location"]),
+        str(handoff["preferred_date"]),
+        int(handoff["participants"]),
+        room,
+    )
+    selected_slot = str(handoff["selected_slot"])
+    if not availability.get("available") or selected_slot not in availability.get("slots", []):
+        return {
+            "status": "failed",
+            "booking_ref": None,
+            "payment_required": require_payment,
+            "payment_payload": None,
+            "error": "selected_slot_not_available",
+            "log": ["booking_node_handler: selected slot was not verified"],
+        }
+    booking = orchestrator.prepare_booking(handoff, selected_slot)
+    return {
+        "status": "booked" if booking.get("confirmed") else "failed",
+        "booking_ref": booking.get("booking_reference") or booking.get("booking_id"),
+        "payment_required": bool(booking.get("payment_url")),
+        "payment_payload": booking.get("payment_url") or None,
+        "error": booking.get("error"),
+        "log": ["booking_node_handler: confirmed booking created"] if booking.get("confirmed") else ["booking_node_handler: booking creation failed"],
+    }
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -124,6 +175,7 @@ class BookingState(TypedDict, total=False):
     service: str
     date: str
     slot_id: Optional[str]
+    selected_slot: str
     owner_id: str
     customer: Dict[str, Any]
     attempt: int
@@ -155,7 +207,7 @@ def node_validate(state: BookingState) -> BookingState:
     handoff = state.get("handoff", {})
     _log(state, "node_validate: checking handoff payload")
 
-    missing = [k for k in ("customer_name", "phone", "intent") if not handoff.get(k)]
+    missing = [k for k in ("customer_name", "phone", "intent", "preferred_date", "selected_slot") if not handoff.get(k)]
     if missing:
         state["status"] = "failed"
         state["error"] = f"missing_required_fields: {missing}"
@@ -164,6 +216,7 @@ def node_validate(state: BookingState) -> BookingState:
 
     state["service"] = handoff.get("intent", "general_inquiry")
     state["date"] = handoff.get("preferred_date") or "2026-07-01"
+    state["selected_slot"] = str(handoff["selected_slot"])
     state["attempt"] = 0
     state["max_attempts"] = 3
     state["status"] = "pending"
@@ -182,13 +235,15 @@ def node_find_slot(state: BookingState, agent: BookingAgent) -> BookingState:
     _log(state, "node_find_slot: querying availability")
     try:
         available = agent.check_availability(state["service"], state["date"])
-        if available:
-            state["slot_id"] = available[0].slot_id
+        selected = state["selected_slot"].strip().lower()
+        matching = [slot for slot in available if str(slot.time).strip().lower() == selected]
+        if matching:
+            state["slot_id"] = matching[0].slot_id
             _log(state, f"node_find_slot: found existing slot {state['slot_id']}")
         else:
-            slot_id = agent.add_slot(state["date"], "18:00", state["service"], capacity=10)
-            state["slot_id"] = slot_id
-            _log(state, f"node_find_slot: created new slot {slot_id}")
+            state["status"] = "failed"
+            state["error"] = "selected_slot_not_available"
+            _log(state, "node_find_slot: FAIL — selected slot is not available")
     except Exception as exc:
         state["status"] = "failed"
         state["error"] = f"slot_lookup_error: {exc}"
@@ -358,6 +413,8 @@ def _run_sequentially(state: BookingState, agent: BookingAgent) -> Dict[str, Any
             return _to_output(state)
 
         state = node_find_slot(state, agent)
+        if state["status"] == "failed":
+            return _to_output(state)
         state = node_lock_slot(state, agent)
         state = node_create_booking(state, agent)
         state = node_handle_payment(state)

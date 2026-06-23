@@ -48,3 +48,24 @@ class BreakoutBookingProvider:
     def release_slots(self, slot_ids: List[str]) -> dict[str, Any]:
         """Release previously locked slots."""
         return self.client.release_slots(slot_ids)
+
+    def get_booking_venues(self) -> List[Dict[str, Any]]:
+        return self.client.get_booking_venues()
+
+    def get_booking_games(self, venue_id: str) -> List[Dict[str, Any]]:
+        return self.client.get_booking_games(venue_id)
+
+    def search_booking_slots(
+        self,
+        venue_id: str,
+        game_id: str,
+        start_date: str,
+        end_date: str,
+    ) -> List[Dict[str, Any]]:
+        return self.client.search_booking_slots(venue_id, game_id, start_date, end_date)
+
+    def create_instant_cart(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.create_instant_cart(payload)
+
+    def create_confirmed_booking(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.client.create_confirmed_booking(payload)

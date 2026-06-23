@@ -104,7 +104,8 @@ def test_escape_room_inquiry_bare_number_captures_participants(tmp_path: Path) -
 
     assert agent.memory.data["participants"] == 10
     assert result["intent"] == "escape_room_inquiry"
-    assert "location" in result["response"].lower()
+    # New flow: age_group is asked before location
+    assert "age" in result["response"].lower() or "adults" in result["response"].lower()
 
 
 def test_escape_room_inquiry_approx_number_captures_participants(tmp_path: Path) -> None:
@@ -114,7 +115,8 @@ def test_escape_room_inquiry_approx_number_captures_participants(tmp_path: Path)
 
     assert agent.memory.data["participants"] == 10
     assert result["intent"] == "escape_room_inquiry"
-    assert "location" in result["response"].lower()
+    # New flow: age_group is asked before location
+    assert "age" in result["response"].lower() or "adults" in result["response"].lower()
 
 
 def test_active_escape_room_flow_preserves_intent_on_noisy_whisper_transcript(tmp_path: Path) -> None:
@@ -556,10 +558,11 @@ def test_booking_after_location_and_room_starts_booking_flow(tmp_path: Path) -> 
     result = agent.handle_message("Book it")
 
     assert result["intent"] == "escape_room_inquiry"
-    assert result["route"]["next_agent"] != "inbound_agent"
+    assert result["route"]["next_agent"] == "qualification_agent"
     assert agent.memory.data["room"] == "Murder Mystery"
     assert "type of event" not in result["response"].lower()
-    assert "may i have your name" in result["response"].lower()
+    assert "how many" in result["response"].lower()
+    assert not agent.memory.handoff_ready("escape_room_inquiry")
 
 
 def test_booking_acceptance_after_escape_room_recommendation_moves_to_contact_collection(tmp_path: Path) -> None:
@@ -572,12 +575,13 @@ def test_booking_acceptance_after_escape_room_recommendation_moves_to_contact_co
     result = agent.handle_message("Book it")
 
     assert result["intent"] == "escape_room_inquiry"
-    assert result["route"]["next_agent"] != "inbound_agent"
+    assert result["route"]["next_agent"] == "inbound_agent"
     assert agent.memory.data["participants"] == 6
     assert agent.memory.data["location"] == "Whitefield"
     assert agent.memory.data["age_group"] == "adults"
     assert "type of event" not in result["response"].lower()
-    assert "may i have your name" in result["response"].lower()
+    assert "Which specific room" in result["response"]
+    assert "name" not in result["response"].lower()
 
 
 def test_booking_acceptance_variations_reuse_current_recommendation(tmp_path: Path) -> None:
@@ -591,7 +595,8 @@ def test_booking_acceptance_variations_reuse_current_recommendation(tmp_path: Pa
         assert result["intent"] == "escape_room_inquiry"
         assert agent.memory.data["recommended_option"]
         assert "type of event" not in result["response"].lower()
-        assert "name" in result["response"].lower() or "phone" in result["response"].lower()
+        assert "Which specific room" in result["response"]
+        assert result["route"]["next_agent"] == "inbound_agent"
 
 
 def test_typo_kidss_corrects_adult_recommendation(tmp_path: Path) -> None:
@@ -1445,12 +1450,18 @@ def test_case_1_seven_friends_first_time(tmp_path: Path) -> None:
 
 def test_first_time_friends_receive_recommendation_before_qualification(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
+    # New flow: with only participants + first-time, agent asks for age_group first
     response = agent.handle_message("We are 7 friends and none of us have played before.")["response"]
 
     assert agent.memory.data["participants"] == 7
     assert agent.memory.data["experience_level"] == "beginner"
-    assert response.index("Murder Mystery") < response.index("adults, kids, or a mix")
-    assert "Hostage" in response
+    # Age group question should come first (recommendation comes after age_group is provided)
+    assert "adults" in response.lower() or "kids" in response.lower() or "age" in response.lower()
+
+    # After providing age_group, recommendation should appear
+    response2 = agent.handle_message("We are all adults.")["response"]
+    assert "Murder Mystery" in response2
+    assert "Hostage" in response2
 
 
 def test_late_customer_gets_rescue_response(tmp_path: Path) -> None:
@@ -1754,7 +1765,7 @@ def test_live_scenarios_from_user_request(tmp_path: Path) -> None:
     result, booking, active_agent = main_module.dispatch(
         "Adults and two kids visiting Whitefield.", inbound, booking, active_agent
     )
-    assert active_agent == "booking_agent"
+    assert active_agent == "inbound_agent"
     assert memory.data["location"] == "Whitefield"
     assert memory.data["age_group"] == "kids"
 
@@ -1767,7 +1778,7 @@ def test_live_scenarios_from_user_request(tmp_path: Path) -> None:
     result, booking, active_agent = main_module.dispatch(
         "Which rooms are available?", inbound, booking, active_agent
     )
-    assert active_agent == "inbound_agent", "Should preempt to inbound_agent for FAQ"
+    assert active_agent == "inbound_agent", "FAQ remains with inbound_agent"
     assert "Breakout has" in result.response or "Murder Mystery" in result.response
 
     # Turn 3: We're 7 friends and none of us have done an escape room before.

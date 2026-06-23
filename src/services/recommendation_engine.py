@@ -11,10 +11,35 @@ class Recommendation:
 
 
 class RecommendationEngine:
+    # Verified against Kreeda get_available_games. Numbered duplicate rooms are
+    # collapsed to their customer-facing name and widest supported range.
+    ROOM_INVENTORY = {
+        "koramangala": {
+            "Murder Mystery": (2, 7), "Hostage": (2, 7), "Classified": (3, 7),
+            "Undercover": (3, 8), "Curse of the Pharaoh": (4, 8),
+            "Forbidden Forest": (4, 10),
+        },
+        "jp nagar": {
+            "Murder Mystery": (2, 7), "Hostage": (2, 7), "Missile Attack": (3, 8),
+        },
+        "whitefield": {
+            "Murder Mystery": (2, 7), "Hostage": (2, 7), "Undercover": (3, 8),
+            "Bomb Defusal": (4, 8),
+        },
+    }
+
     def can_recommend(self, memory: dict) -> bool:
         intent = memory.get("intent", "")
         if intent == "escape_room_inquiry":
-            return True
+            return any(
+                memory.get(field)
+                for field in (
+                    "participants",
+                    "age_group",
+                    "experience_level",
+                    "challenge_preference",
+                )
+            )
         if intent == "birthday_party":
             return bool(memory.get("location") and memory.get("participants") and memory.get("preferred_date"))
         if intent == "corporate_event":
@@ -24,6 +49,30 @@ class RecommendationEngine:
         if intent == "virtual_event":
             return bool(memory.get("participants") and memory.get("preferred_date"))
         return False
+
+    @classmethod
+    def available_options(cls, memory: dict, limit: int = 6) -> list[str]:
+        location = str(memory.get("location", "")).lower()
+        participants = int(memory.get("participants") or 0)
+        inventories = (
+            [cls.ROOM_INVENTORY[location]]
+            if location in cls.ROOM_INVENTORY
+            else list(cls.ROOM_INVENTORY.values())
+        )
+        preferred_order = [
+            "Murder Mystery", "Hostage", "Undercover", "Classified",
+            "Bomb Defusal", "Missile Attack", "Curse of the Pharaoh", "Forbidden Forest",
+        ]
+        available: list[str] = []
+        for room in preferred_order:
+            supported = any(
+                room in inventory
+                and (not participants or inventory[room][0] <= participants <= inventory[room][1])
+                for inventory in inventories
+            )
+            if supported:
+                available.append(room)
+        return available[:limit]
 
     def recommend(self, message: str, memory: dict) -> Recommendation:
         if not self.can_recommend(memory):
@@ -61,7 +110,11 @@ class RecommendationEngine:
 
         # 2. Kids-centric (family groups / children)
         age = self._extract_age(text)
-        if (age is not None and 5 <= age <= 8) or age_group == "kids" or "kids" in text:
+        explicit_children = bool(re.search(r"\b(?:kids?|children|child)\b", message.lower()))
+        if explicit_children or (
+            age_group != "teens"
+            and ((age is not None and 5 <= age <= 8) or age_group == "kids" or "kids" in text)
+        ):
             if age is not None and 5 <= age <= 8:
                 return Recommendation(
                     "The Wizarding Championship",
@@ -78,35 +131,42 @@ class RecommendationEngine:
                 "These rooms are extremely family-friendly and work well for a mix of kids and adults."
             )
 
-        # 3. Beginner / first time
-        if "beginner" in text or "first time" in text or "first-time" in text or "never done" in text or experience_level == "beginner":
+        # 3. Event flows remain separate from single-room recommendations.
+        if intent == "corporate_event":
             return Recommendation(
-                "Murder Mystery or Hostage",
-                "Murder Mystery is easier to start with as a classic detective investigation, while Hostage adds a bit of urgency."
+                "Corporate event coordination",
+                "Corporate groups need event-level capacity and scheduling rather than a single-room assumption.",
+            )
+        if participants and isinstance(participants, int) and participants > 8:
+            return Recommendation(
+                "Multi-room event coordination",
+                "No single escape room can hold this group, so room splitting must be confirmed before booking.",
             )
 
-        # 4. Large group size / Corporate
-        if (participants and isinstance(participants, int) and participants > 8) or intent == "corporate_event":
-            return Recommendation(
-                "Escape Rooms and Scavenger Hunt",
-                "A combination of multiple rooms like Undercover and Bomb Defusal, alongside a Scavenger Hunt, works best for larger teams to keep everyone engaged."
+        # 4. Beginner / first time
+        if "beginner" in text or "first time" in text or "first-time" in text or "never done" in text or experience_level == "beginner":
+            return self._validated_room_recommendation(
+                ("Murder Mystery", "Hostage"),
+                location,
+                participants,
+                "Murder Mystery is easier to start with as a classic detective investigation, while Hostage adds a bit of urgency.",
             )
 
         # 5. Challenging / Adults / Experienced
         if "challenging" in text or "hard" in text or "adults" in text or "experienced" in text or "challenging" in preferences:
-            if location.lower() == "whitefield" or str(location).lower() == "whitefield":
-                return Recommendation(
-                    "Classified, Undercover, or Bomb Defusal",
-                    "These are highly immersive, higher-difficulty rooms perfect for adults or experienced players looking for a challenge."
-                )
-            if location.lower() == "jp nagar" or str(location).lower() == "jp nagar":
-                return Recommendation(
-                    "Prison Break",
-                    "Prison Break is our hardest and most mission-oriented room in JP Nagar."
-                )
-            return Recommendation(
-                "Classified, Undercover, Prison Break, or Bomb Defusal",
-                "These are suitable choices for adults looking for a more challenging experience."
+            candidates = {
+                "whitefield": ("Undercover", "Bomb Defusal", "Murder Mystery", "Hostage"),
+                "jp nagar": ("Missile Attack", "Murder Mystery", "Hostage"),
+                "koramangala": ("Classified", "Undercover", "Murder Mystery", "Hostage"),
+            }.get(
+                str(location).lower(),
+                ("Classified", "Bomb Defusal", "Undercover", "Prison Break"),
+            )
+            return self._validated_room_recommendation(
+                candidates,
+                location,
+                participants,
+                "These rooms match the selected location and supported group size.",
             )
 
         if "challenging" in text or "challenge" in text or "hard" in text or "hardest" in text:
@@ -169,10 +229,37 @@ class RecommendationEngine:
                 "It works well for friend, college, school, or office farewell groups.",
             )
 
+        # This sentinel preserves the existing qualification path. It is not
+        # presented as inventory; location-aware branches above supply the
+        # customer-facing room choices.
         return Recommendation(
             "Murder Mystery, Hostage, Prison Break, Classified, Undercover, or Bomb Defusal",
             "The final choice depends on group age, group size, and challenge preference.",
         )
+
+    @classmethod
+    def _validated_room_recommendation(
+        cls,
+        candidates: tuple[str, ...],
+        location: str,
+        participants: int | str,
+        reason: str,
+    ) -> Recommendation:
+        inventory = cls.ROOM_INVENTORY.get(str(location).lower())
+        if not inventory:
+            return Recommendation(" or ".join(candidates[:2]), reason)
+        count = int(participants) if participants else 0
+        valid = [
+            room
+            for room in candidates
+            if room in inventory and (not count or inventory[room][0] <= count <= inventory[room][1])
+        ]
+        if not valid:
+            return Recommendation(
+                "Multi-room event coordination",
+                "No room at this location supports the current group size as a single booking.",
+            )
+        return Recommendation(" or ".join(valid[:2]), reason)
 
     @staticmethod
     def _extract_age(text: str) -> int | None:

@@ -155,7 +155,8 @@ class ConversationIntelligenceLayer:
             if not any(room in lowered for room in room_keywords):
                 return (
                     "No worries. I'd probably start with Murder Mystery for a first visit. "
-                    "Hostage is the more urgent option if the group wants extra pressure."
+                    "Hostage is the more urgent option if the group wants extra pressure. "
+                    "How many people are joining?"
                 )
 
         return None

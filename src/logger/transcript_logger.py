@@ -89,6 +89,8 @@ class TranscriptLogger:
             "missing_fields": result.get("missing_fields", []),
             "booking_result": result.get("booking_result"),
             "handoff_summary": result.get("handoff_summary"),
+            "sentiment_analysis": result.get("sentiment_analysis", {}),
+            "escalation": result.get("escalation", {}),
             "collected_context": {
                 key: value
                 for key, value in memory.items()

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from ..memory.conversation_memory import ConversationMemory
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class QualificationAgent:
     _ACK_PREFIXES: dict[str, str] = {
         "location": "Perfect.",
         "preferred_date": "Nice.",
+        "preferred_time": "Got it.",
         "customer_name": "",          # filled dynamically using the name
         "phone": "Perfect.",
         "food_required": "Got it.",
@@ -109,14 +114,24 @@ class QualificationAgent:
 
         # Capture the field value explicitly
         self._capture_expected_field(message, expected, active_intent)
-        # Also run generic memory extraction (location, participants, etc.)
-        self.memory.update_from_message(message, active_intent, expected_field=expected)
+        # Also run generic memory extraction (location, participants, date,
+        # phone, etc.). A customer can provide a valid field while we are
+        # waiting for another one; store it instead of discarding the turn.
+        extracted = self.memory.update_from_message(message, active_intent, expected_field=expected)
         self._capture_bare_count(message, active_intent, expected)
 
         # Re-evaluate
         after = self.qualify(active_intent)
 
-        new_field_captured = len(after.missing_fields) < len(current.missing_fields)
+        meaningful_extracted = {
+            key: value
+            for key, value in extracted.items()
+            if key not in {"intent", "event_type", "sentiment"} and value not in ("", None)
+        }
+        new_field_captured = (
+            len(after.missing_fields) < len(current.missing_fields)
+            or bool(meaningful_extracted)
+        )
 
         # Only validate/reject the message if we have already explicitly asked
         # this field on the previous turn, and no new field was captured.
@@ -136,7 +151,8 @@ class QualificationAgent:
         self._waiting_for = after.missing_fields[0] if after.missing_fields else ""
 
         # Build a natural response with acknowledgment
-        response = self._build_response(expected, after)
+        captured_field = next(iter(meaningful_extracted.keys()), expected) if meaningful_extracted else expected
+        response = self._build_response(captured_field, after)
 
         return QualificationResult(
             qualified=after.qualified,
@@ -168,6 +184,12 @@ class QualificationAgent:
         if field == "customer_name":
             name = str(self.memory.data.get("customer_name", ""))
             return f"Thank you, {name}." if name else "Thank you."
+        if field == "preferred_date":
+            date = str(self.memory.data.get("preferred_date", "")).strip()
+            return f"Got it, {date}." if date else "Got it."
+        if field == "preferred_time":
+            preferred_time = str(self.memory.data.get("preferred_time", "")).strip()
+            return f"Got it, {preferred_time}." if preferred_time else "Got it."
         return self._ACK_PREFIXES.get(field, "")
 
     # ------------------------------------------------------------------ #
@@ -201,7 +223,7 @@ class QualificationAgent:
             if location:
                 self.memory.set_field("location", location, message, expected)
         elif expected == "age_group":
-            age_group, age_detail = self.memory._extract_age_group(lowered)
+            age_group, age_detail = self.memory._extract_age_group(lowered, allow_bare_range=True)
 
             if age_group:
                 self.memory.set_field("age_group", age_group, message, expected)
@@ -329,17 +351,26 @@ class QualificationAgent:
         Rejects: numbers, garbage, common short words.
         """
         text = message.strip()
+        extracted = ConversationMemory._extract_name(text)
+        if extracted:
+            return extracted
         # Prefixed patterns first
         prefixed = [
-            r"\bmy name is\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bi am\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bi'm\s+([A-Za-z][A-Za-z ]{1,40})",
-            r"\bthis is\s+([A-Za-z][A-Za-z ]{1,40})",
+            r"\bmy name is\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bi am\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bi'm\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bthis is\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
         ]
         for pattern in prefixed:
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
-                return " ".join(match.group(1).split()).title()
+                candidate = " ".join(match.group(1).split()).title()
+                logger.info("NAME_CANDIDATE=%s", candidate)
+                if ConversationMemory._is_plausible_name(candidate):
+                    logger.info("NAME_ACCEPTED=%s", candidate)
+                    return candidate
+                logger.info("NAME_REJECTED=%s", candidate)
+                return ""
 
         # Bare single word — must be all alpha, 2+ chars, not a common noise word
         _NOISE = {
@@ -354,11 +385,20 @@ class QualificationAgent:
         words = clean.split()
         if len(words) == 1:
             word = words[0]
-            if len(word) >= 2 and word.lower() not in _NOISE and word.isalpha():
-                return word.title()
+            candidate = word.title()
+            logger.info("NAME_CANDIDATE=%s", candidate)
+            if len(word) >= 2 and word.lower() not in _NOISE and word.isalpha() and ConversationMemory._is_plausible_name(candidate):
+                logger.info("NAME_ACCEPTED=%s", candidate)
+                return candidate
+            logger.info("NAME_REJECTED=%s", candidate)
         # Two-word name (First Last)
         if len(words) == 2 and all(w.isalpha() and len(w) >= 2 and w.lower() not in _NOISE for w in words):
-            return " ".join(w.title() for w in words)
+            candidate = " ".join(w.title() for w in words)
+            logger.info("NAME_CANDIDATE=%s", candidate)
+            if ConversationMemory._is_plausible_name(candidate):
+                logger.info("NAME_ACCEPTED=%s", candidate)
+                return candidate
+            logger.info("NAME_REJECTED=%s", candidate)
         return ""
 
     @staticmethod

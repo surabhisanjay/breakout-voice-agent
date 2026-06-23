@@ -111,5 +111,6 @@ def test_booking_continuation_after_recommendation_preserves_context(tmp_path: P
     agent.handle_message("It is our first time.")
     response = agent.handle_message("Book that.").response
 
-    assert "Murder Mystery" in response or "Hostage" in response
-    assert "name" in response.lower() or "date" in response.lower() or "phone" in response.lower()
+    assert "Murder Mystery" in response and "Hostage" in response
+    assert "Which specific room" in response
+    assert "captured all the information" not in response

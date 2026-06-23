@@ -2,24 +2,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import time
 from pathlib import Path
 
 from src.core.agent_response import AgentResponse
 from src.agents.booking_agent import BookingAgent
+from src.agents.escalation_agent import EscalationAgent
+from src.agents.handoff_summary_agent import HandoffSummaryAgent
 from src.memory.conversation_memory import ConversationMemory
 from src.agents.inbound_agent import InboundAgent
+from src.agents.sentiment_agent import SentimentAgent, SentimentResult
 from src.knowledge.knowledge_loader import KnowledgeLoader
 from src.logger.transcript_logger import TranscriptLogger
 from src.voice.stt.voice_input import VoiceInput
 from src.voice.tts.voice_output import VoiceOutput
 from src.orchestration.conversation_manager import ConversationManager
+from src.config.env_loader import booking_provider_label, load_project_env
 
 
 BASE_DIR = Path(__file__).resolve().parent
+load_project_env(BASE_DIR)
+logging.basicConfig(
+    level=os.environ.get("BREAKOUT_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 EXIT_COMMANDS = {"quit", "exit", "goodbye", "bye", "stop"}
 POST_TTS_COOLDOWN_SECONDS = 0.75
+logger = logging.getLogger(__name__)
 
 
 def is_exit_command(message: str) -> bool:
@@ -128,16 +139,70 @@ def run_startup_check(agent: InboundAgent) -> None:
     )
     examples_count = len(getattr(agent.response_composer, "few_shot_examples", []))
 
-    # ── booking provider ───────────────────────────────────────────
-    booking_provider = "simulator" if demo_mode or not (
-        os.environ.get("BOOKING_API_KEY") and os.environ.get("BOOKING_BASE_URL")
-    ) else "live-configured"
-
     # ── banner (Exactly four lines, nothing else) ─────────────────
     print(f"OPENAI_ENABLED={openai_enabled and openai_quota_ok}")
-    print(f"BOOKING_PROVIDER={booking_provider}")
+    print(f"BOOKING_PROVIDER={booking_provider_label()}")
     print(f"PERSONALITY_PROMPT_LOADED={personality_loaded}")
     print(f"TRANSCRIPT_EXAMPLES_LOADED={examples_count}")
+
+
+def _observe_customer_sentiment(message: str, inbound: InboundAgent) -> SentimentResult:
+    stage = str(inbound.memory.data.get("conversation_mode", "discovery"))
+    try:
+        return SentimentAgent(inbound.memory).analyze(message, stage=stage)
+    except Exception:
+        return SentimentResult(
+            sentiment="neutral",
+            confidence=0.0,
+            escalation_recommended=False,
+            reason="Sentiment observer unavailable.",
+            stage=stage,
+        )
+
+
+def _enrich_conversation_result(
+    message: str,
+    inbound: InboundAgent,
+    result: AgentResponse,
+    sentiment: SentimentResult,
+) -> AgentResponse:
+    result.sentiment_analysis = sentiment.to_dict()
+    result.debug = dict(result.debug or {})
+    result.debug["sentiment_analysis"] = result.sentiment_analysis
+    try:
+        # Inbound extraction has a legacy one-turn classifier. Restore the richer
+        # observer result without touching any booking or qualification field.
+        inbound.memory.data["sentiment"] = sentiment.sentiment
+        inbound.memory.data["sentiment_confidence"] = sentiment.confidence
+        inbound.memory.data["sentiment_reason"] = sentiment.reason
+
+        escalation = EscalationAgent(inbound.memory).evaluate(message, sentiment, result)
+        result.escalation = escalation.to_dict()
+        result.debug["escalation"] = result.escalation
+        if escalation.escalate:
+            try:
+                result.handoff_summary = HandoffSummaryAgent().generate(
+                    inbound.memory.data,
+                    escalation.to_dict(),
+                )
+            except Exception:
+                result.handoff_summary = {
+                    "escalation_reason": escalation.reason,
+                    "summary": escalation.summary or "Escalation requested; detailed summary unavailable.",
+                }
+            result.next_agent = "escalation_agent"
+            result.should_handoff = True
+            if "safety concern" in escalation.reason.lower():
+                result.response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent."
+            elif "refund" in escalation.reason.lower():
+                result.response = "I'll connect you with our team to review the refund request and the booking details."
+            elif "human representative" in escalation.reason.lower():
+                result.response = "Of course. I'll connect you with our team and pass along the details already shared."
+        result.state = inbound.memory.as_state()
+    except Exception:
+        result.escalation = {"escalate": False, "reason": "", "summary": ""}
+        result.debug["escalation"] = result.escalation
+    return result
 
 
 def dispatch(
@@ -155,10 +220,29 @@ def dispatch(
     """
     try:
         import os
+        sentiment = _observe_customer_sentiment(message, inbound)
         demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
-        
         manager = ConversationManager(inbound.memory)
         target_agent, category = manager.determine_routing(message, active_agent)
+        if target_agent == "booking_agent":
+            current_intent = str(inbound.memory.data.get("intent", ""))
+            detected_intent = manager.intent_detector.detect(message, previous_intent=current_intent).intent
+            booking_intent = current_intent
+            if booking_intent in ("", "general_faq"):
+                booking_intent = (
+                    detected_intent
+                    if detected_intent not in ("", "general_faq")
+                    else "escape_room_inquiry"
+                )
+            inbound.memory.merge_message(message, booking_intent)
+            inbound.memory.data["booking_started"] = True
+            inbound.memory.data["current_workflow"] = "booking"
+            inbound.memory.data["booking_consent_pending"] = False
+            inbound.memory.save()
+            if booking is None:
+                booking = BookingAgent(inbound.memory)
+            logger.info("BOOKING_AGENT_SELECTED session_intent=%s category=%s", booking_intent, category)
+            logger.info("BOOKING_STARTED=true")
         preempted_active_booking = active_agent == "booking_agent" and target_agent == "inbound_agent"
 
         # 1. Handle preemption from booking_agent to inbound_agent (e.g., FAQ, recommendation, new inquiry)
@@ -167,12 +251,6 @@ def dispatch(
             inbound.memory.data["current_workflow"] = "general"
             inbound.memory.data["booking_consent_pending"] = False
             inbound.qualification_agent._waiting_for = ""
-            if booking is not None:
-                # Reset booking agent internal state so it restarts fresh next time
-                booking._state = booking._STATE_CHECKING_AVAILABILITY
-                booking._available_slots = []
-                booking._last_availability = {}
-                booking._booking_result = None
             inbound.memory.save()
 
         # 2. Handle new inquiry topic switch (reset qualification memory)
@@ -202,9 +280,11 @@ def dispatch(
 
         if is_actual_topic_switch or is_replacement_group:
             fields_to_clear = [
-                "location", "participants", "age_group", "experience_level",
+                "location", "participants", "participants_min", "participants_max", "age_group", "experience_level",
                 "company_size", "event_type", "preferred_date", "food_required",
-                "budget_range", "intent", "recommended_option"
+                "budget_range", "intent", "recommended_option", "room",
+                "selected_slot", "booking_id", "booking_ref", "booking_order_id",
+                "completed_booking", "booking_started",
             ]
             for field in fields_to_clear:
                 inbound.memory.data[field] = ""
@@ -224,11 +304,12 @@ def dispatch(
                 booking._last_availability = {}
                 booking._booking_result = None
 
+        if target_agent == "booking_agent" and booking is not None:
+            active_agent = "booking_agent"
+
         if active_agent == "booking_agent" and booking is not None:
-            # Force booking agent's orchestrator to match demo mode
-            if demo_mode:
-                booking.orchestrator.is_live = False
             result = booking.handle_message(message)
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
             return result, booking, "booking_agent"
 
         # InboundAgent handles this turn
@@ -239,6 +320,7 @@ def dispatch(
         if preempted_active_booking and category in {"faq", "recommendation"}:
             result.should_handoff = False
             result.next_agent = "inbound_agent"
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
             return result, booking, "inbound_agent"
 
         # Demo safety: keep intake ownership until the existing handoff
@@ -256,13 +338,13 @@ def dispatch(
                 booking = BookingAgent(inbound.memory)
             # Sync response composer state
             booking.response_composer.enabled = inbound.response_composer.enabled
-            if demo_mode:
-                booking.orchestrator.is_live = False
             # First BookingAgent turn: run availability check immediately.
             # The sentinel "ready" is ignored by BookingAgent — it reads location/date from memory.
             booking_result = booking.handle_message("ready")
+            booking_result = _enrich_conversation_result(message, inbound, booking_result, sentiment)
             return booking_result, booking, "booking_agent"
 
+        result = _enrich_conversation_result(message, inbound, result, sentiment)
         return result, booking, "inbound_agent"
 
     except Exception as exc:
@@ -279,13 +361,15 @@ def dispatch(
 
         # Build a safe friendly deterministic response
         fallback_text = "I've processed your request. Let me assist you with that. Could you please confirm your name?"
-        return AgentResponse(
+        fallback_result = AgentResponse(
             response=fallback_text,
             intent=str(inbound.memory.data.get("intent", "escape_room_inquiry")),
             next_agent="inbound_agent",
             should_handoff=False,
             state=inbound.memory.as_state(),
-        ), booking, "inbound_agent"
+        )
+        fallback_result = _enrich_conversation_result(message, inbound, fallback_result, sentiment)
+        return fallback_result, booking, "inbound_agent"
 
 
 

@@ -32,6 +32,26 @@ class ConversationManager:
         """
         lowered = message.lower().strip()
 
+        if self._booking_signal_with_context(message):
+            return "booking_agent", "continuing_workflow"
+
+        if self.memory.data.get("booking_started") and not self._is_explicit_topic_switch(message):
+            return "booking_agent", "continuing_workflow"
+
+        if (
+            self._has_booking_context()
+            and not self._is_explicit_topic_switch(message)
+            and self._is_booking_topic(message)
+        ):
+            return "booking_agent", "continuing_workflow"
+
+        # Once booking owns the conversation, concrete booking inputs must win
+        # over room-name and question classification. Otherwise a message such
+        # as "book Undercover at 8:20 PM" is routed as a room FAQ and loses the
+        # verified slot state.
+        if active_agent == "booking_agent" and self._is_booking_continuation(message):
+            return "booking_agent", "continuing_workflow"
+
         # ------------------------------------------------------------------ #
         # PRE-ROUTING: QuestionClassifier runs before any keyword check.      #
         # Priority order: Customer Question → Recommendation → FAQ →          #
@@ -141,6 +161,16 @@ class ConversationManager:
     def _is_booking_continuation(self, message: str) -> bool:
         lowered = message.lower().strip()
 
+        normalized = self.memory.normalize_number_words(message).lower()
+        if (
+            not self._is_explicit_topic_switch(message)
+            and (
+                self.memory._extract_participant_range(normalized)
+                or self.memory._extract_participants(normalized)
+            )
+        ):
+            return True
+
         # Cancellation / Rescheduling is handled by booking agent
         cancel_keywords = {"cancel", "cancellation", "refund", "reschedule", "postpone"}
         if any(kw in lowered for kw in cancel_keywords):
@@ -167,7 +197,58 @@ class ConversationManager:
             return True
 
         # Check for slot numbers/indices
-        if any(word in lowered for word in ("first", "second", "third", "one", "two", "three", "slot")):
+        if {"first", "second", "third", "one", "two", "three", "slot"}.intersection(words):
             return True
 
         return False
+
+    def _has_booking_context(self) -> bool:
+        return all(
+            self.memory.data.get(field)
+            for field in ("room", "location", "preferred_date")
+        )
+
+    def _booking_signal_with_context(self, message: str) -> bool:
+        lowered = message.lower()
+        booking_signal = bool(
+            re.search(
+                r"\b(?:book|booking|reserve|proceed|confirm\s+booking|availability|available\s+slots?)\b",
+                lowered,
+            )
+        )
+        if not booking_signal:
+            return False
+        return bool(
+            self.memory.data.get("room")
+            or self.memory.data.get("location")
+            or self.memory._extract_room(lowered)
+            or self.memory._extract_location(lowered)
+        )
+
+    def _is_explicit_topic_switch(self, message: str) -> bool:
+        lowered = message.lower()
+        current_intent = str(self.memory.data.get("intent", ""))
+        if current_intent != "corporate_event" and re.search(
+            r"\b(?:corporate|office|employees?|company|team building)\b", lowered
+        ):
+            return True
+        if current_intent != "birthday_party" and re.search(
+            r"\b(?:birthday|bday|birthday party)\b", lowered
+        ):
+            return True
+        return current_intent != "escape_room_inquiry" and "escape room" in lowered
+
+    def _is_booking_topic(self, message: str) -> bool:
+        lowered = message.lower()
+        normalized = self.memory.normalize_number_words(message).lower()
+        return bool(
+            BookingAgent._extract_slot(message)
+            or self.memory._extract_participant_range(normalized)
+            or self.memory._extract_participants(normalized)
+            or re.search(
+                r"\b(?:availability|available|price|pricing|cost|book|booking|reserve|"
+                r"confirmation|confirm|capacity|fit|accommodate|slot|time|discount|offer|"
+                r"coupon|promo|deal|membership)\b",
+                lowered,
+            )
+        )

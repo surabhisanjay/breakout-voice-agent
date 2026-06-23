@@ -83,6 +83,7 @@ class BookingTool:
 
         return {
             "booking_id": booking_id,
+            "booking_reference": booking_id,
             "confirmed": True,
             "location": memory.get("location", ""),
             "date": memory.get("preferred_date", ""),

@@ -2,6 +2,9 @@
 from .inbound_agent import InboundAgent
 from .booking_agent import BookingAgent, BookingSimulator, BookingError, EscalationRequired
 from .qualification_agent import QualificationAgent, QualificationResult
+from .sentiment_agent import SentimentAgent, SentimentResult
+from .escalation_agent import EscalationAgent, EscalationResult
+from .handoff_summary_agent import HandoffSummaryAgent
 
 __all__ = [
     "InboundAgent",
@@ -11,4 +14,9 @@ __all__ = [
     "EscalationRequired",
     "QualificationAgent",
     "QualificationResult",
+    "SentimentAgent",
+    "SentimentResult",
+    "EscalationAgent",
+    "EscalationResult",
+    "HandoffSummaryAgent",
 ]

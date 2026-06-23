@@ -8,6 +8,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR))
 
 from integrations.langgraph_booking_node import run_booking_workflow
+from src.integrations.langgraph.booking_node import booking_node_handler
 from src.agents.booking_agent import BookingSimulator as BookingAgent, BookingError
 
 
@@ -20,6 +21,7 @@ def test_run_booking_workflow_basic(tmp_path: Path) -> None:
         "participants": 4,
         "intent": "birthday_party",
         "preferred_date": "2026-07-01",
+        "selected_slot": "18:00",
     }
 
     result = run_booking_workflow(handoff, require_payment=False, agent=agent)
@@ -53,6 +55,7 @@ def test_run_booking_workflow_idempotent_already_booked(monkeypatch: Any) -> Non
         "participants": 3,
         "intent": "escape_room_inquiry",
         "preferred_date": "2026-07-01",
+        "selected_slot": "18:00",
     }
 
     original_create = agent.create_booking
@@ -71,3 +74,34 @@ def test_run_booking_workflow_idempotent_already_booked(monkeypatch: Any) -> Non
     assert result["status"] == "booked"
     assert result["booking_ref"]
     assert calls["count"] >= 2
+
+
+def test_active_langgraph_module_imports_and_requires_selected_slot() -> None:
+    result = booking_node_handler({
+        "customer_name": "Anita",
+        "phone": "9876543210",
+        "participants": 4,
+        "age_group": "adults",
+        "location": "Whitefield",
+        "preferred_date": "2026-07-01",
+        "intent": "escape_room_inquiry",
+    })
+
+    assert result["status"] == "failed"
+    assert "selected_slot" in result["error"]
+
+
+def test_active_langgraph_rejects_package_before_orchestrator(monkeypatch: Any) -> None:
+    result = booking_node_handler({
+        "customer_name": "Anita",
+        "phone": "9876543210",
+        "participants": 4,
+        "age_group": "adults",
+        "location": "Whitefield",
+        "preferred_date": "2026-07-01",
+        "selected_slot": "3:00 PM",
+        "intent": "birthday_party",
+        "recommended_option": "Scavenger Hunt Birthday Package",
+    })
+
+    assert result["error"] == "package_inquiry_requires_event_team"

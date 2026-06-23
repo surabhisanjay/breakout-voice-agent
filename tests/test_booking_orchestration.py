@@ -144,10 +144,21 @@ def test_breakout_booking_provider_methods(mock_locations_response, mock_slots_r
 def test_booking_orchestrator_routing_live(mock_tools_response, mock_locations_response, mock_games_response, mock_slots_response) -> None:
     # In live mode, verify that methods are delegated to correct providers
     mock_bp = MagicMock(spec=BreakoutBookingProvider)
-    mock_bp.get_locations.return_value = json.loads(mock_locations_response.decode("utf-8"))
-    mock_bp.get_games.return_value = json.loads(mock_games_response.decode("utf-8"))
-    mock_bp.get_slots.return_value = json.loads(mock_slots_response.decode("utf-8"))
-    mock_bp.prepare_booking.return_value = {"bookingId": "bk-live-1"}
+    mock_bp.get_booking_venues.return_value = json.loads(mock_locations_response.decode("utf-8"))
+    mock_bp.get_booking_games.return_value = [
+        {
+            "gameId": "game-1",
+            "gameName": "Murder Mystery",
+            "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 10}],
+        }
+    ]
+    mock_bp.search_booking_slots.return_value = json.loads(mock_slots_response.decode("utf-8"))
+    mock_bp.create_instant_cart.return_value = {"cartId": "cart-live-1"}
+    mock_bp.create_confirmed_booking.return_value = {
+        "bookingId": "bk-live-1",
+        "orderId": "or-live-1",
+        "status": "CONFIRMED",
+    }
     mock_bp.release_slots.return_value = {"status": "success"}
 
     mock_cp = MagicMock(spec=AgentContractProvider)
@@ -162,7 +173,7 @@ def test_booking_orchestrator_routing_live(mock_tools_response, mock_locations_r
         avail = orchestrator.check_availability(location="Koramangala", date="2026-07-01", participants=2)
         assert avail["available"] is True
         assert "6:00 PM" in avail["slots"]  # 18:00 display format
-        assert mock_bp.get_locations.call_count >= 1  # called at init probe + check_availability
+        assert mock_bp.get_booking_venues.call_count == 1
 
         prep = orchestrator.prepare_booking(
             {
@@ -176,7 +187,8 @@ def test_booking_orchestrator_routing_live(mock_tools_response, mock_locations_r
             "6:00 PM",
         )
         assert prep["booking_id"] == "bk-live-1"
-        mock_bp.prepare_booking.assert_called_once()
+        mock_bp.create_instant_cart.assert_called_once()
+        mock_bp.create_confirmed_booking.assert_called_once()
 
         orchestrator.release_slots(["slot-1"])
         mock_bp.release_slots.assert_called_once_with(["slot-1"])
