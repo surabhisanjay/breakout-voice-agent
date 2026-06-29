@@ -65,7 +65,17 @@ _AFFIRMATIVES = frozenset({
     "go ahead", "go for it", "do it", "book it", "book that",
     "sounds good", "perfect", "confirmed", "confirm", "absolutely",
     "please", "please do", "that works", "let's do it", "let's go",
+    "let's book that", "lets book that", "i'll take that one", "ill take that one",
+    "let's continue", "lets continue",
 })
+
+# Relationship language is normal booking context. It becomes a package
+# inquiry only when the customer explicitly requests a celebration add-on.
+_COUPLE_PACKAGE_TERMS = (
+    "anniversary package", "proposal package", "couple package", "romantic package",
+    "candle light", "candlelight", "decorations", "celebration package",
+    "surprise setup", "flowers", "balloons", "cake package",
+)
 
 _BOOKING_TRIGGERS = re.compile(
     r"\b(?:i want to book|want to book|can i book|book it|book now|book a|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book|book that)\b",
@@ -73,7 +83,8 @@ _BOOKING_TRIGGERS = re.compile(
 )
 
 _BOOKING_EVENT_HINTS = re.compile(
-    r"\b(?:escape room|room|birthday|corporate|bachelor|farewell|couple|virtual|online|team building|party)\b",
+    r"\b(?:escape room|room|birthday|corporate|bachelor|farewell|couple|virtual|online|team building|party|"
+    r"anniversary package|proposal package|couple package|romantic package|celebration package)\b",
     re.IGNORECASE,
 )
 
@@ -156,6 +167,16 @@ def extract_entities(text: str) -> Dict[str, Any]:
     if name_match:
         entities["customer_name"] = name_match.group(1)
 
+    relationship_text = text.lower()
+    if re.search(
+        r"\b(?:couple|husband\s+and\s+wife|wife\s+and\s+husband|"
+        r"girlfriend\s+and\s+boyfriend|boyfriend\s+and\s+girlfriend|"
+        r"my\s+(?:husband|wife|girlfriend|boyfriend)\s+and\s+i|two\s+of\s+us)\b",
+        relationship_text,
+    ):
+        entities["relationship"] = "couple"
+        entities.setdefault("participants", 2)
+
     return entities
 
 
@@ -172,7 +193,7 @@ class IntentDetector:
         "corporate_event":     ("corporate", "office", "team building", "employee", "employees", "company", "hr", "team outing"),
         "bachelor_party":      ("bachelor", "stag", "groom"),
         "farewell_party":      ("farewell", "send off", "last day", "goodbye party"),
-        "couple_event":        ("couple", "date", "anniversary", "two of us", "2 of us"),
+        "couple_event":        _COUPLE_PACKAGE_TERMS,
         "virtual_event":       ("virtual", "online", "remote", "distributed"),
         "cancellation_request":("cancel", "cancellation", "refund", "reschedule", "postpone"),
     }
@@ -183,7 +204,7 @@ class IntentDetector:
         ("birthday_party",       ("birthday", "bday", "cake", "kids party", "child birthday")),
         ("bachelor_party",       ("bachelor", "stag", "boys party", "groom")),
         ("farewell_party",       ("farewell", "send off", "last day", "goodbye party")),
-        ("couple_event",         ("couple", "date", "date night", "anniversary", "two of us", "2 of us")),
+        ("couple_event",         _COUPLE_PACKAGE_TERMS),
         ("corporate_event",      ("corporate", "office", "team building", "employee", "company", "hr", "team outing")),
         ("virtual_event",        ("virtual", "online", "remote", "distributed")),
         ("escape_room_inquiry",  ("escape room", "room", "game", "puzzle", "challenge", "adults", "kids", "players", "people", "visiting", "coming", "recommend", "suggest", "compare", "friends", "group", "recommend a room", "suggest a room")),
@@ -245,7 +266,7 @@ class IntentDetector:
                     detected_intent = "corporate_event"
                 elif "birthday" in text or "bday" in text:
                     detected_intent = "birthday_party"
-                elif "couple" in text or "anniversary" in text:
+                elif any(term in text for term in _COUPLE_PACKAGE_TERMS):
                     detected_intent = "couple_event"
                 elif "bachelor" in text:
                     detected_intent = "bachelor_party"
@@ -264,6 +285,9 @@ class IntentDetector:
             # Generic booking request without explicit event type; do not force escape_room_inquiry.
             if (
                 previous_intent == "escape_room_inquiry"
+                or entities.get("participants")
+                or entities.get("relationship") == "couple"
+                or bool(re.search(r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:adults?|kids?|children|people|players)\b", text))
                 or any(location in text for location in ("whitefield", "koramangala", "jp nagar", "jp nagr"))
                 or any(room in text for room in (
                     "murder mystery", "hostage", "classified", "bomb defusal",
@@ -308,6 +332,19 @@ class IntentDetector:
                     entities,
                     needs_clarification=True,
                 )
+
+        if (
+            "recommend" in text or "suggest" in text or "which room" in text
+        ) and (
+            entities.get("participants")
+            or entities.get("relationship") == "couple"
+            or any(location in text for location in ("whitefield", "koramangala", "jp nagar", "jp nagr"))
+        ):
+            return IntentResult(
+                "escape_room_inquiry", CONF_STRONG,
+                "recommendation request with escape-room booking context",
+                entities,
+            )
 
         if (
             previous_intent in ("", "general_faq")

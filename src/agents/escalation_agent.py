@@ -18,6 +18,10 @@ class EscalationResult:
     escalate: bool
     reason: str
     summary: str
+    priority: str = "low"
+    status: str = "resolved"
+    trigger: str = ""
+    recommended_human_action: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -27,7 +31,7 @@ class EscalationAgent:
     """Detect takeover conditions without changing business routing."""
 
     HUMAN_REQUEST = re.compile(
-        r"\b(?:speak|talk|connect|transfer)\s+(?:me\s+)?(?:to|with)\s+(?:a\s+|an\s+|the\s+|your\s+)?(?:human|person|manager|supervisor|agent|team|support)\b"
+        r"\b(?:speak|talk|connect|transfer)\s+(?:me\s+)?(?:to|with)\s+(?:a\s+|an\s+|the\s+|your\s+)?(?:human|person|manager|supervisor|agent|team|support|someone|anyone)\b"
         r"|\breal\s+person\b"
         r"|\bi\s+(?:want|need)\s+(?:a\s+|an\s+)?(?:human|person|manager|supervisor|agent)\b"
         r"|\bget\s+me\s+(?:a\s+)?(?:human|person)\b"
@@ -52,7 +56,8 @@ class EscalationAgent:
     )
     MISUNDERSTANDING = (
         "that's not what i asked", "that is not what i asked", "you keep asking",
-        "i already told you", "not listening", "you misunderstood", "again and again",
+        "i already told you", "not listening", "not understanding", "you misunderstood",
+        "booking is wrong", "my booking is wrong", "again and again",
     )
     FAILURE_TEXT = (
         "having trouble", "unable to retrieve", "couldn't retrieve", "could not retrieve",
@@ -104,6 +109,8 @@ class EscalationAgent:
             reason = "Customer requested a refund"
         elif sentiment.sentiment == "angry":
             reason = "Customer anger detected"
+        elif getattr(sentiment, "sentiment_profile", {}).get("escalation_risk") == "high":
+            reason = "High conversation-wide escalation risk"
         elif sentiment.escalation_recommended or negative_count >= 2:
             reason = "Repeated customer frustration detected"
         elif any(phrase in lowered for phrase in self.MISUNDERSTANDING):
@@ -125,7 +132,16 @@ class EscalationAgent:
                 summary = self.summary_agent.generate(self.memory.data, provisional)["summary"]
             except Exception:  # pragma: no cover
                 summary = "(summary unavailable)"
-        escalation = EscalationResult(bool(reason), reason, summary)
+        priority, action = self._priority_and_action(reason, sentiment)
+        escalation = EscalationResult(
+            bool(reason),
+            reason,
+            summary,
+            priority=priority,
+            status="unresolved" if reason else "resolved",
+            trigger=self._trigger_for_reason(reason),
+            recommended_human_action=action,
+        )
         self.memory.data["escalation_state"] = escalation.to_dict()
         if escalation.escalate:
             history = self.memory.data.setdefault("escalation_history", [])
@@ -136,6 +152,40 @@ class EscalationAgent:
             self.memory.data["escalation_history"] = history[-10:]
         self.memory.save()
         return escalation
+
+    @staticmethod
+    def _trigger_for_reason(reason: str) -> str:
+        lowered = reason.lower()
+        if "safety" in lowered:
+            return "safety_concern"
+        if "refund" in lowered:
+            return "refund_request"
+        if "human" in lowered:
+            return "human_request"
+        if "frustration" in lowered or "anger" in lowered:
+            return "frustration"
+        if "loop" in lowered:
+            return "unresolved_loop"
+        if "failure" in lowered:
+            return "integration_failure"
+        return "none" if not reason else "manual_review"
+
+    @staticmethod
+    def _priority_and_action(reason: str, sentiment: SentimentResult) -> tuple[str, str]:
+        if not reason:
+            return "low", "No human action required"
+        lowered = reason.lower()
+        if "safety" in lowered:
+            return "high", "Immediately alert on-site staff or emergency services and contact the customer"
+        if "refund" in lowered:
+            return "high", "Review booking/payment context and contact customer about refund request"
+        if "human" in lowered:
+            return "medium", "Connect customer to a human representative with full call context"
+        if getattr(sentiment, "sentiment_profile", {}).get("escalation_risk") == "high":
+            return "high", "Manager should review and contact customer before the issue escalates"
+        if "frustration" in lowered or "anger" in lowered or "loop" in lowered:
+            return "medium", "Human should take over or send a corrective follow-up"
+        return "medium", "Manager should review the conversation"
 
     @staticmethod
     def _is_active_booking_update(message: str) -> bool:

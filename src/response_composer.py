@@ -227,8 +227,7 @@ class ResponseComposer:
             ("location", "Which Breakout location would you like to visit?"),
             ("preferred_date", "What date would you like to visit?"),
             ("selected_slot", "Which available time slot would you like?"),
-            ("first_name", "What is your first name?"),
-            ("last_name", "What is your last name?"),
+            ("customer_name", "May I have your name?"),
             ("phone", "What is the best phone number for the booking?"),
         )
         for field, prompt in prompts:

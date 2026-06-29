@@ -66,6 +66,20 @@ class AgentResponse:
     """Current customer sentiment metadata; never spoken to the customer."""
     escalation: dict = field(default_factory=dict)
     """Escalation recommendation metadata; routing remains deterministic."""
+    call_intelligence: dict = field(default_factory=dict)
+    """Frontend-ready conversation intelligence bundle."""
+    ai_summary: dict = field(default_factory=dict)
+    """Frontend AI Summary tab data."""
+    customer_profile: dict = field(default_factory=dict)
+    """Frontend customer profile panel data."""
+    timeline_events: list[dict] = field(default_factory=list)
+    """Frontend timeline events."""
+    follow_up_recommendations: list[str] = field(default_factory=list)
+    """Frontend follow-up recommendation list."""
+    transcript: list[dict] = field(default_factory=list)
+    """Frontend transcript tab data."""
+    recording: dict = field(default_factory=dict)
+    """Frontend recording tab metadata."""
     debug: dict = field(default_factory=dict)
     """Compatibility field with surabhi/main containing state snapshot and entities."""
 
@@ -93,6 +107,13 @@ class AgentResponse:
             "booking": self.booking,
             "sentiment_analysis": self.sentiment_analysis,
             "escalation": self.escalation,
+            "call_intelligence": self.call_intelligence,
+            "ai_summary": self.ai_summary,
+            "customer_profile": self.customer_profile,
+            "timeline_events": self.timeline_events,
+            "follow_up_recommendations": self.follow_up_recommendations,
+            "transcript": self.transcript,
+            "recording": self.recording,
             "debug": self.debug,
             "state": self.state,
             # Legacy key used by some older test assertions

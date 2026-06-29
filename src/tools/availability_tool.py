@@ -48,6 +48,8 @@ class AvailabilityTool:
         ("koramangala", "18 june"): ["10:00 AM", "12:00 PM", "3:00 PM", "6:00 PM"],
         ("whitefield", "18 june"): ["11:00 AM", "2:00 PM", "5:00 PM"],
         ("jp nagar", "18 june"): ["10:00 AM", "1:00 PM"],
+        ("whitefield", "tomorrow"): ["5:20 PM", "6:30 PM", "7:40 PM"],
+        ("jp nagar", "tomorrow"): ["3:30 PM", "4:00 PM", "7:00 PM"],
     }
 
     _DEFAULT_SLOTS = ["10:00 AM", "12:00 PM", "3:00 PM"]

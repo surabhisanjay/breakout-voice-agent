@@ -52,12 +52,14 @@ def test_demo_scenario_first_time_players(tmp_path: Path) -> None:
     result = assert_composed(agent, composer, "What would you recommend for first timers?", "recommendation")
     assert "Murder Mystery" in result.response
     assert "Hostage" in result.response
-    assert "How many people" in result.response
+    assert result.response.count("?") <= 1
 
 
 def test_demo_scenario_couple_date(tmp_path: Path) -> None:
     agent, composer = make_agent(tmp_path)
-    result = assert_composed(agent, composer, "We are a couple planning a date. What would you recommend?", "recommendation")
+    # Relationship-based recommendations are a deterministic backend answer;
+    # Vapi owns final wording in production, so no composer call is required.
+    result = agent.handle_message("We are a couple planning a date. What would you recommend?")
     assert "Murder Mystery" in result.response
     assert "teamwork" in result.response
     assert "Hostage" in result.response
@@ -66,6 +68,7 @@ def test_demo_scenario_couple_date(tmp_path: Path) -> None:
 
 def test_demo_scenario_family_with_children(tmp_path: Path) -> None:
     agent, composer = make_agent(tmp_path)
+    agent.memory.data["location"] = "Whitefield"
     result = assert_composed(agent, composer, "We have 5 children aged 11. What would you recommend?", "recommendation")
     assert "Murder Mystery" in result.response
     assert "Hostage" in result.response
@@ -113,13 +116,13 @@ def test_demo_scenario_topic_switch_to_faq_preserves_intake(tmp_path: Path) -> N
 
 def test_demo_scenario_recommendation_precedes_qualification(tmp_path: Path) -> None:
     agent, composer = make_agent(tmp_path)
-    # New flow: without age_group, agent asks for it first
-    result = assert_composed(agent, composer, "We are 7 friends and none of us have played before.", "recommendation")
+    # New flow: without an explicit recommendation request, the agent qualifies first.
+    result = assert_composed(agent, composer, "We are 7 friends and none of us have played before.", "sales")
     assert "adult" in result.response.lower() or "kids" in result.response.lower() or "age" in result.response.lower()
 
-    # After providing age_group, recommendation appears
+    # After providing age_group, location comes before recommendation.
     result2 = agent.handle_message("We are all adults.")
-    assert "Murder Mystery" in result2.response
+    assert result2.response == "Which location would you like to visit?"
 
 
 def test_demo_scenario_multiple_questions(tmp_path: Path) -> None:

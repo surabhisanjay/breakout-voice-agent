@@ -5,6 +5,7 @@ from .qualification_agent import QualificationAgent, QualificationResult
 from .sentiment_agent import SentimentAgent, SentimentResult
 from .escalation_agent import EscalationAgent, EscalationResult
 from .handoff_summary_agent import HandoffSummaryAgent
+from .conversation_intelligence_agent import ConversationIntelligenceAgent
 
 __all__ = [
     "InboundAgent",
@@ -19,4 +20,5 @@ __all__ = [
     "EscalationAgent",
     "EscalationResult",
     "HandoffSummaryAgent",
+    "ConversationIntelligenceAgent",
 ]

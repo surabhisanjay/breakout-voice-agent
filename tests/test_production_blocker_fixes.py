@@ -88,7 +88,8 @@ def test_acceptance_a_book_room_then_change_date_clears_slot(tmp_path: Path) -> 
 
     assert agent.memory.data["preferred_date"] == "25 June"
     assert agent.memory.data["selected_slot"] == ""
-    assert "8:00 PM" in result.response
+    assert "check 25 June instead" in result.response
+    assert "same room" in result.response
 
 
 # Regression: room modification invalidates all slot/cart state.

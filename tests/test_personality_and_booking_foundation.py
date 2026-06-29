@@ -214,7 +214,7 @@ def test_openai_timeout_reliability(monkeypatch, tmp_path) -> None:
 
     result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
-    assert "Murder Mystery" in result.response or "Hostage" in result.response
+    assert result.response == "Which location would you like to visit?"
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error
 
     result2 = agent.handle_message("Koramangala")
@@ -251,7 +251,7 @@ def test_openai_connection_failure_reliability(monkeypatch, tmp_path) -> None:
 
     result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
-    assert "Murder Mystery" in result.response or "Hostage" in result.response
+    assert result.response == "Which location would you like to visit?"
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error
 
     result2 = agent.handle_message("JP Nagar")
@@ -290,7 +290,7 @@ def test_openai_auth_failure_reliability(monkeypatch, tmp_path) -> None:
 
     result = agent.handle_message("We are seven adults and none of us have done an escape room before.")
     assert result.response
-    assert "Murder Mystery" in result.response or "Hostage" in result.response
+    assert result.response == "Which location would you like to visit?"
     assert "openai_failure" in agent.response_composer.last_error or "openai_failure" in agent.last_openai_error
 
     result2 = agent.handle_message("Whitefield")

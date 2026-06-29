@@ -41,7 +41,7 @@ class BookingOrchestrator:
             try:
                 from ..integrations.kreeda.breakout_api import BreakoutAPI
                 self.booking_provider = booking_provider or BreakoutBookingProvider(
-                    client=BreakoutAPI(timeout=2.0)
+                    client=BreakoutAPI(timeout=self._live_booking_timeout())
                 )
                 # The operational availability/cart/booking path does not use
                 # contract discovery. Construct it lazily for advanced actions.
@@ -70,6 +70,16 @@ class BookingOrchestrator:
         self._slot_lookup: Dict[str, Dict[str, Any]] = {}
         self._location: Dict[str, Any] = {}
         self._game: Dict[str, Any] = {}
+
+    @staticmethod
+    def _live_booking_timeout() -> float:
+        raw = os.environ.get("BOOKING_HTTP_TIMEOUT_SECONDS", "10.0")
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid BOOKING_HTTP_TIMEOUT_SECONDS=%r; using 10.0", raw)
+            return 10.0
+        return max(timeout, 1.0)
 
     def check_availability(self, *args, **kwargs) -> Any:
         """
@@ -197,7 +207,8 @@ class BookingOrchestrator:
 
             return {
                 "available": bool(display_slots),
-                "slots": display_slots,
+                "slots": bookable_display_slots,
+                "all_available_slots": display_slots,
                 "location": location,
                 "date": date,
                 "participants": participants,
@@ -236,6 +247,9 @@ class BookingOrchestrator:
         split_first, split_last = self._split_name(str(memory.get("customer_name", "")))
         first_name = str(memory.get("first_name") or split_first).strip()
         last_name = str(memory.get("last_name") or split_last).strip()
+        # Use "NA" as lastName fallback so the Kreeda API never rejects single-name bookings.
+        # This eliminates the last-name zombie loop entirely.
+        api_last_name = last_name if last_name else "NA"
         missing = [
             field
             for field in ("age_group", "location", "preferred_date", "phone")
@@ -243,8 +257,6 @@ class BookingOrchestrator:
         ]
         if not first_name:
             missing.append("customer.firstName")
-        if not last_name:
-            missing.append("customer.lastName")
         if not (memory.get("participants") or memory.get("company_size")):
             missing.append("participants")
         if missing:
@@ -263,6 +275,10 @@ class BookingOrchestrator:
                 chosen_slot,
             )
             return self.simulator.prepare_booking(memory, chosen_slot)
+
+        create_payload: dict[str, Any] = {}
+        cart_id = str(memory.get("_kreeda_cart_id") or "")
+        idempotency_key = str(memory.get("_booking_idempotency_key") or "")
 
         try:
             slot = self._slot_lookup.get(self._normalise_time(chosen_slot))
@@ -344,7 +360,7 @@ class BookingOrchestrator:
                 "slots": [slot_payload],
                 "customer": {
                     "firstName": first_name,
-                    "lastName": last_name,
+                    "lastName": api_last_name,
                     "phone": self._international_phone(str(memory.get("phone", ""))),
                 },
                 "sendPaymentRequest": False,
@@ -370,9 +386,13 @@ class BookingOrchestrator:
             booking_reference = self._record_value(
                 result, ("orderId", "bookingReference", "bookingRef", "reference")
             )
-            status = str(result.get("status", "")).upper()
+            raw_status = str(result.get("status", "") or "PAYMENT_PENDING").upper()
+            has_payment_url = bool(result.get("paymentUrl") or result.get("orderUrl"))
+            status = "PAYMENT_PENDING" if has_payment_url and raw_status in {"RESERVED", "PENDING"} else raw_status
             confirmed = bool(
-                booking_id and booking_reference and status in {"CONFIRMED", "BOOKED"}
+                booking_id
+                and booking_reference
+                and status in {"CONFIRMED", "BOOKED", "RESERVED", "PAYMENT_PENDING", "PENDING"}
             )
             logger.info(
                 "Kreeda booking response: bookingId=%s response_keys=%s",
@@ -390,6 +410,8 @@ class BookingOrchestrator:
                 logger.info("BOOKING_ID=%s", booking_id)
                 logger.info("BOOKING_REFERENCE=%s", booking_reference)
                 logger.info("BOOKING_REF=%s", booking_reference)
+                if status in {"PAYMENT_PENDING", "PENDING"}:
+                    logger.info("PAYMENT_PENDING=true bookingId=%s", booking_id)
             else:
                 logger.warning(
                     "KREEDA_CREATE_BOOKING_FAILURE reason=unconfirmed_response bookingId=%s bookingReference=%s status=%s",
@@ -402,7 +424,7 @@ class BookingOrchestrator:
                 "booking_reference": booking_reference,
                 "order_id": result.get("orderId", ""),
                 "order_url": result.get("orderUrl", ""),
-                "payment_url": result.get("paymentUrl", ""),
+                "payment_url": result.get("paymentUrl") or result.get("orderUrl", ""),
                 "status": status,
                 "confirmed": confirmed,
                 "prepared": True,
@@ -423,6 +445,14 @@ class BookingOrchestrator:
                 "confirmed": False,
                 "prepared": False,
                 "error": self.fallback_reason,
+                "provider_error": str(exc),
+                "provider_error_type": type(exc).__name__,
+                "provider_error_code": str(getattr(exc, "code", "")),
+                "retryable": str(getattr(exc, "code", "")) in {"TIMEOUT", "NETWORK_ERROR"},
+                "cart_id": cart_id or str(memory.get("_kreeda_cart_id") or ""),
+                "idempotency_key": idempotency_key or str(memory.get("_booking_idempotency_key") or ""),
+                "payload_fields": sorted(create_payload.keys()) if create_payload else [],
+                "state_preserved": True,
                 "missing_field": self._missing_customer_field(str(exc)),
             }
 
@@ -608,13 +638,14 @@ class BookingOrchestrator:
             return BookingRecordShim("BK-MOCK", slot_id, customer, "confirmed", require_payment, None)
 
         first_name, last_name = self._split_name(customer.get("customer_name", ""))
+        api_last_name = last_name if last_name else "NA"
         payload = {
             "locationId": self._record_value(self._location, ("locationId", "id", "_id")) or "default-loc-id",
             "gameId": self._record_value(self._game, ("gameId", "id", "_id")) or "default-game-id",
             "slotId": slot_id,
             "isPrivate": True,
             "customerFirstName": first_name,
-            "customerLastName": last_name,
+            "customerLastName": api_last_name,
             "customerPhone": customer.get("phone", ""),
         }
         logger.info(
@@ -791,7 +822,9 @@ class BookingOrchestrator:
                 if fmt != "%Y-%m-%d":
                     parsed = parsed.replace(year=today.year)
                     if parsed.date() < today:
-                        return ""
+                        if (today - parsed.date()).days > 7:
+                            return ""
+                        parsed = parsed.replace(year=today.year + 1)
                 return parsed.strftime("%Y-%m-%d")
             except ValueError:
                 continue

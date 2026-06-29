@@ -71,7 +71,7 @@ def test_first_timer_recommendation_uses_one_reason_and_next_question(tmp_path: 
         "We are seven adults and none of us have done an escape room before."
     ).response
 
-    assert "Murder Mystery" in response
+    assert response == "Which location would you like to visit?"
     assert len(response.split()) <= 45
     assert response.count("?") == 1
     assert "It gives you" not in response

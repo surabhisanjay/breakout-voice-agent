@@ -13,7 +13,7 @@ from src.config.env_loader import booking_provider_label, should_use_live_bookin
 from src.integrations.kreeda.agent_contract_provider import AgentContractProvider  # noqa: E402
 from src.integrations.kreeda.breakout_booking_provider import BreakoutBookingProvider  # noqa: E402
 from src.orchestration.booking_orchestrator import BookingOrchestrator  # noqa: E402
-from src.integrations.kreeda.breakout_api import BreakoutAPI  # noqa: E402
+from src.integrations.kreeda.breakout_api import BreakoutAPI, BreakoutAPIError  # noqa: E402
 
 
 def test_booking_credentials_activate_live_even_in_demo_mode(monkeypatch) -> None:
@@ -94,6 +94,53 @@ def test_breakout_api_uses_discovered_tool_routes(monkeypatch) -> None:
         ("POST", "/agent/v1.0/tools/create_instant_cart", {"venueId": "venue-1", "slots": [{}]}),
         ("POST", "/agent/v1.0/tools/create_booking", {"venueId": "venue-1", "cartId": "cart-1"}),
     ]
+
+
+def test_breakout_api_records_masked_structured_trace(monkeypatch) -> None:
+    client = BreakoutAPI(base_url="https://test.api", api_key="test-key", timeout=7)
+    monkeypatch.setattr(client, "_ensure_dns", lambda: None)
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"bookingId":"bk-1","status":"CONFIRMED"}'
+
+    monkeypatch.setattr(
+        "src.integrations.kreeda.breakout_api.urlopen",
+        lambda *_args, **_kwargs: FakeResponse(),
+    )
+
+    client.create_confirmed_booking(
+        {
+            "venueId": "venue-1",
+            "cartId": "cart-1",
+            "customer": {
+                "firstName": "Siddharth",
+                "lastName": "Khandelwal",
+                "phone": "+919982151357",
+            },
+        }
+    )
+
+    request_trace = client.trace_events[0]
+    response_trace = client.trace_events[-1]
+    assert request_trace["event"] == "KREEDA_HTTP_REQUEST"
+    assert request_trace["endpoint"] == "/agent/v1.0/tools/create_booking"
+    assert request_trace["timeout_seconds"] == 7
+    assert request_trace["read_timeout_seconds"] == 7
+    assert request_trace["retry_policy"] == "none"
+    assert request_trace["payload"]["customer"]["firstName"] == "S***"
+    assert request_trace["payload"]["customer"]["lastName"] == "K***"
+    assert request_trace["payload"]["customer"]["phone"] == "***1357"
+    assert response_trace["event"] == "KREEDA_HTTP_RESPONSE"
+    assert response_trace["status"] == 200
 
 
 def test_breakout_api_rejects_non_iso_dates_before_request(monkeypatch) -> None:
@@ -246,6 +293,46 @@ def test_live_prepare_booking_uses_alias_ids(monkeypatch, caplog) -> None:
     assert any("BOOKING_REFERENCE=or-live-123" in message for message in messages)
 
 
+def test_live_reserved_order_with_payment_url_is_payment_pending(monkeypatch) -> None:
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("BOOKING_API_KEY", "test-key")
+    monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
+    monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
+
+    booking_provider = MagicMock(spec=BreakoutBookingProvider)
+    booking_provider.get_booking_venues.return_value = [{"venueId": "loc-whitefield", "name": "Whitefield"}]
+    booking_provider.get_booking_games.return_value = [{
+        "id": "game-mm",
+        "name": "Murder Mystery",
+        "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
+    }]
+    booking_provider.search_booking_slots.return_value = [{
+        "eventId": "slot-630", "gameId": "game-mm", "date": "2026-07-12",
+        "time": "18:30", "available": 7, "isAvailable": True,
+    }]
+    booking_provider.create_instant_cart.return_value = {"cartId": "cart-live-123"}
+    booking_provider.create_confirmed_booking.return_value = {
+        "bookingId": "bk-live-123",
+        "orderId": "or-live-123",
+        "orderUrl": "https://pay.example/order",
+        "status": "RESERVED",
+    }
+    orchestrator = BookingOrchestrator(booking_provider=booking_provider)
+    orchestrator.check_availability("Whitefield", "12 July", 4, "Murder Mystery")
+
+    result = orchestrator.prepare_booking({
+        "customer_name": "Siddharth Khandelwal",
+        "phone": "9982151357",
+        "location": "Whitefield",
+        "preferred_date": "12 July",
+        "participants": 4,
+        "age_group": "adults",
+    }, "6:30 PM")
+
+    assert result["status"] == "PAYMENT_PENDING"
+    assert result["payment_url"] == "https://pay.example/order"
+
+
 def test_live_booking_failure_emits_explicit_failure_marker(monkeypatch, caplog) -> None:
     caplog.set_level("INFO")
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
@@ -277,6 +364,108 @@ def test_live_booking_failure_emits_explicit_failure_marker(monkeypatch, caplog)
     assert any("KREEDA_CREATE_BOOKING_FAILURE" in record.getMessage() for record in caplog.records)
 
 
+def test_live_prepare_booking_timeout_preserves_cart_and_customer_state(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_API_KEY", "test-key")
+    monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
+    monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
+    provider = MagicMock(spec=BreakoutBookingProvider)
+    provider.get_booking_venues.return_value = [{"venueId": "venue-1", "name": "Whitefield"}]
+    provider.get_booking_games.return_value = [{
+        "gameId": "game-1",
+        "name": "Murder Mystery",
+        "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 8}],
+    }]
+    provider.search_booking_slots.return_value = [{
+        "eventId": "event-1",
+        "gameId": "game-1",
+        "date": "2026-07-12",
+        "time": "20:50",
+        "available": 8,
+        "isAvailable": True,
+    }]
+    provider.create_instant_cart.return_value = {"cartId": "cart-live-456"}
+    provider.create_confirmed_booking.side_effect = BreakoutAPIError(
+        "Booking API is unavailable: The read operation timed out",
+        code="TIMEOUT",
+    )
+    orchestrator = BookingOrchestrator(
+        booking_provider=provider,
+        contract_provider=MagicMock(spec=AgentContractProvider),
+    )
+    memory = {
+        "customer_name": "Siddharth Khandelwal",
+        "phone": "9982151357",
+        "location": "Whitefield",
+        "preferred_date": "12 July",
+        "participants": 4,
+        "age_group": "adults",
+    }
+
+    orchestrator.check_availability("Whitefield", "12 July", 4, "Murder Mystery")
+    result = orchestrator.prepare_booking(memory, "8:50 PM")
+
+    assert result["confirmed"] is False
+    assert result["prepared"] is False
+    assert result["provider_error_code"] == "TIMEOUT"
+    assert result["retryable"] is True
+    assert result["cart_id"] == "cart-live-456"
+    assert result["idempotency_key"]
+    assert result["state_preserved"] is True
+    assert memory["_kreeda_cart_id"] == "cart-live-456"
+    assert memory["_booking_idempotency_key"] == result["idempotency_key"]
+    assert memory["customer_name"] == "Siddharth Khandelwal"
+    assert memory["phone"] == "9982151357"
+
+
+def test_live_prepare_booking_accepts_reserved_status_with_order_url_payment_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_API_KEY", "test-key")
+    monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
+    monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
+    provider = MagicMock(spec=BreakoutBookingProvider)
+    provider.get_booking_venues.return_value = [{"venueId": "venue-1", "name": "Whitefield"}]
+    provider.get_booking_games.return_value = [{
+        "gameId": "game-1",
+        "name": "Murder Mystery",
+        "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 8}],
+    }]
+    provider.search_booking_slots.return_value = [{
+        "eventId": "event-1",
+        "gameId": "game-1",
+        "date": "2026-07-12",
+        "time": "12:40",
+        "available": 8,
+        "isAvailable": True,
+    }]
+    provider.create_instant_cart.return_value = {"cartId": "cart-live-789"}
+    provider.create_confirmed_booking.return_value = {
+        "bookingId": "cart-live-789",
+        "orderId": "order-live-789",
+        "orderUrl": "https://bs.kreeda.icu/breakout/order-live-789",
+        "paymentUrl": None,
+        "status": "RESERVED",
+    }
+    orchestrator = BookingOrchestrator(
+        booking_provider=provider,
+        contract_provider=MagicMock(spec=AgentContractProvider),
+    )
+
+    orchestrator.check_availability("Whitefield", "12 July", 4, "Murder Mystery")
+    result = orchestrator.prepare_booking({
+        "customer_name": "Siddharth Khandelwal",
+        "phone": "9982151357",
+        "location": "Whitefield",
+        "preferred_date": "12 July",
+        "participants": 4,
+        "age_group": "adults",
+    }, "12:40 PM")
+
+    assert result["confirmed"] is True
+    assert result["status"] == "PAYMENT_PENDING"
+    assert result["booking_id"] == "cart-live-789"
+    assert result["booking_reference"] == "order-live-789"
+    assert result["payment_url"] == "https://bs.kreeda.icu/breakout/order-live-789"
+
+
 def test_live_availability_preserves_slots_but_marks_group_capacity_unsupported(monkeypatch) -> None:
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
     monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
@@ -295,7 +484,8 @@ def test_live_availability_preserves_slots_but_marks_group_capacity_unsupported(
     result = orchestrator.check_availability("Whitefield", "25 June", 11, "Undercover")
 
     assert result["available"] is True
-    assert result["slots"] == ["3:00 PM"]
+    assert result["slots"] == []
+    assert result["all_available_slots"] == ["3:00 PM"]
     assert result["capacity_supported"] is False
     assert result["bookable_slots"] == []
     assert result["max_available_capacity"] == 8

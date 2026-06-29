@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -58,6 +59,7 @@ class BreakoutAPI:
         self.base_url = (base_url or os.environ.get("BOOKING_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key if api_key is not None else os.environ.get("BOOKING_API_KEY", "")
         self.timeout = timeout
+        self.trace_events: list[dict[str, Any]] = []
         # Cache DNS availability so we only probe once per instance
         self._dns_ok: bool | None = None
 
@@ -192,7 +194,20 @@ class BreakoutAPI:
         if query:
             url = f"{url}?{urlencode(query)}"
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        self._log_request(method, path, query, payload)
+        trace = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "method": method,
+            "endpoint": path,
+            "url": url,
+            "timeout_seconds": self.timeout,
+            "connect_timeout_seconds": self.timeout,
+            "read_timeout_seconds": self.timeout,
+            "retry_policy": "none",
+            "query": query or {},
+            "payload": self._redact_payload(payload) if payload is not None else {},
+        }
+        self._trace("KREEDA_HTTP_REQUEST", trace)
+        started = time.perf_counter()
         request = Request(
             url,
             data=body,
@@ -210,11 +225,31 @@ class BreakoutAPI:
                 status = getattr(response, "status", None)
                 if status is None and hasattr(response, "getcode"):
                     status = response.getcode()
-                self._log_response(path, int(status or 200), raw)
+                self._trace(
+                    "KREEDA_HTTP_RESPONSE",
+                    {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "method": method,
+                        "endpoint": path,
+                        "status": int(status or 200),
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+                        "response_body": self._redact_payload(self._json_or_text(raw)),
+                    },
+                )
                 return json.loads(raw) if raw else {}
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            self._log_response(path, exc.code, raw)
+            self._trace(
+                "KREEDA_HTTP_ERROR",
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "method": method,
+                    "endpoint": path,
+                    "status": exc.code,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "response_body": self._redact_payload(self._json_or_text(raw)),
+                },
+            )
             try:
                 error_payload = json.loads(raw)
                 error = error_payload.get("error", error_payload)
@@ -223,13 +258,26 @@ class BreakoutAPI:
             except json.JSONDecodeError:
                 message, code = raw or str(exc), "HTTP_ERROR"
             raise BreakoutAPIError(message, code=code, status=exc.code) from exc
-        except (URLError, TimeoutError) as exc:
-            logger.warning(
-                "Kreeda API transport error: endpoint=%s error=%s",
-                path,
-                exc,
+        except (socket.timeout, TimeoutError, URLError) as exc:
+            duration_ms = round((time.perf_counter() - started) * 1000, 1)
+            is_timeout = isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in str(exc).lower()
+            self._trace(
+                "KREEDA_HTTP_TRANSPORT_ERROR",
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "method": method,
+                    "endpoint": path,
+                    "duration_ms": duration_ms,
+                    "timeout_seconds": self.timeout,
+                    "connect_timeout_seconds": self.timeout,
+                    "read_timeout_seconds": self.timeout,
+                    "retry_policy": "none",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
             )
-            raise BreakoutAPIError(f"Booking API is unavailable: {exc}", code="NETWORK_ERROR") from exc
+            code = "TIMEOUT" if is_timeout else "NETWORK_ERROR"
+            raise BreakoutAPIError(f"Booking API is unavailable: {exc}", code=code) from exc
 
     @staticmethod
     def _as_list(response: Any) -> list[dict[str, Any]]:
@@ -250,41 +298,39 @@ class BreakoutAPI:
 
     @staticmethod
     def _redact_payload(payload: Any) -> Any:
+        if isinstance(payload, list):
+            return [BreakoutAPI._redact_payload(item) for item in payload]
         if not isinstance(payload, dict):
             return payload
-        redacted = dict(payload)
-        for key in ("customerPhone", "phone", "mobile", "customerEmail", "email"):
-            if key in redacted and redacted[key]:
-                value = str(redacted[key])
-                redacted[key] = f"***{value[-4:]}" if len(value) >= 4 else "***"
-        for key in ("customerFirstName", "customerLastName", "customerName", "name"):
-            if key in redacted and redacted[key]:
-                redacted[key] = f"{str(redacted[key])[:1]}***"
+        redacted: dict[str, Any] = {}
+        for key, value in payload.items():
+            lowered = key.lower()
+            if any(token in lowered for token in ("phone", "mobile")) and value:
+                string_value = str(value)
+                redacted[key] = f"***{string_value[-4:]}" if len(string_value) >= 4 else "***"
+            elif any(token in lowered for token in ("email", "apikey", "api_key", "authorization", "token")) and value:
+                redacted[key] = "***"
+            elif lowered in {
+                "firstname",
+                "lastname",
+                "customerfirstname",
+                "customerlastname",
+                "customername",
+                "name",
+            } and value:
+                redacted[key] = f"{str(value)[:1]}***"
+            else:
+                redacted[key] = BreakoutAPI._redact_payload(value)
         return redacted
 
     @staticmethod
-    def _trim_body(raw: str) -> str:
-        return raw if len(raw) <= 4000 else raw[:4000] + "...<truncated>"
+    def _json_or_text(raw: str) -> Any:
+        try:
+            return json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return raw
 
-    def _log_request(
-        self,
-        method: str,
-        path: str,
-        query: dict[str, str] | None,
-        payload: dict[str, Any] | None,
-    ) -> None:
-        logger.info(
-            "Kreeda API request: method=%s endpoint=%s query=%s payload=%s",
-            method,
-            path,
-            query or {},
-            json.dumps(self._redact_payload(payload), ensure_ascii=False) if payload is not None else "{}",
-        )
-
-    def _log_response(self, path: str, status: int, raw: str) -> None:
-        logger.info(
-            "Kreeda API response: endpoint=%s status=%s body=%s",
-            path,
-            status,
-            self._trim_body(raw),
-        )
+    def _trace(self, event: str, fields: dict[str, Any]) -> None:
+        record = {"event": event, **fields}
+        self.trace_events.append(record)
+        logger.info("%s %s", event, json.dumps(record, ensure_ascii=False, default=str))

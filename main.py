@@ -4,11 +4,13 @@ import argparse
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
 from src.core.agent_response import AgentResponse
 from src.agents.booking_agent import BookingAgent
+from src.agents.conversation_intelligence_agent import ConversationIntelligenceAgent
 from src.agents.escalation_agent import EscalationAgent
 from src.agents.handoff_summary_agent import HandoffSummaryAgent
 from src.memory.conversation_memory import ConversationMemory
@@ -19,6 +21,7 @@ from src.logger.transcript_logger import TranscriptLogger
 from src.voice.stt.voice_input import VoiceInput
 from src.voice.tts.voice_output import VoiceOutput
 from src.orchestration.conversation_manager import ConversationManager
+from src.services.conversation_guard import ConversationGuard
 from src.config.env_loader import booking_provider_label, load_project_env
 
 
@@ -166,6 +169,7 @@ def _enrich_conversation_result(
     result: AgentResponse,
     sentiment: SentimentResult,
 ) -> AgentResponse:
+    _repair_repeated_question(message, inbound, result)
     result.sentiment_analysis = sentiment.to_dict()
     result.debug = dict(result.debug or {})
     result.debug["sentiment_analysis"] = result.sentiment_analysis
@@ -197,12 +201,112 @@ def _enrich_conversation_result(
             elif "refund" in escalation.reason.lower():
                 result.response = "I'll connect you with our team to review the refund request and the booking details."
             elif "human representative" in escalation.reason.lower():
-                result.response = "Of course. I'll connect you with our team and pass along the details already shared."
+                result.response = "I'll connect you with our team and pass along the details already shared."
         result.state = inbound.memory.as_state()
     except Exception:
         result.escalation = {"escalate": False, "reason": "", "summary": ""}
         result.debug["escalation"] = result.escalation
+    try:
+        intelligence = ConversationIntelligenceAgent().analyze(
+            inbound.memory.data,
+            result.escalation,
+        )
+        inbound.memory.data["conversation_intelligence"] = intelligence
+        inbound.memory.save()
+        result.call_intelligence = intelligence
+        result.ai_summary = intelligence.get("ai_summary", {})
+        result.customer_profile = intelligence.get("customer_profile", {})
+        result.timeline_events = intelligence.get("timeline_events", [])
+        result.follow_up_recommendations = intelligence.get("follow_up_recommendations", [])
+        result.transcript = intelligence.get("transcript", [])
+        result.recording = intelligence.get("recording", {})
+        result.sentiment_analysis = intelligence.get("sentiment_analysis", result.sentiment_analysis)
+        result.debug["conversation_intelligence"] = {
+            "timeline_events": len(result.timeline_events),
+            "follow_up_recommendations": len(result.follow_up_recommendations),
+        }
+        result.state = inbound.memory.as_state()
+    except Exception:
+        result.call_intelligence = {}
     return result
+
+
+def _repair_repeated_question(message: str, inbound: InboundAgent, result: AgentResponse) -> None:
+    current = re.sub(r"\s+", " ", str(result.response or "")).strip()
+    if not current.endswith("?"):
+        return
+    agent_turns = [
+        turn
+        for turn in inbound.memory.data.get("conversation", [])
+        if turn.get("role") == "agent" and turn.get("content")
+    ]
+    if len(agent_turns) < 2:
+        return
+    previous = re.sub(r"\s+", " ", str(agent_turns[-2].get("content", ""))).strip()
+    current_core = _question_core(current)
+    if not current_core:
+        return
+    if _has_substantive_answer_before_question(current):
+        return
+    previous_core = _question_core(previous)
+    recent_core_repeated = bool(
+        current_core
+        and any(
+            _question_core(str(turn.get("content", ""))) == current_core
+            for turn in agent_turns[-5:-1]
+        )
+    )
+    if previous.lower() != current.lower() and not recent_core_repeated:
+        return
+
+    lowered = message.lower()
+    if current_core == "location":
+        if re.search(r"\b(?:first\s+time|first-time|beginner|never\s+done)\b", lowered):
+            repaired = "Got it, first time. I'll keep the recommendation beginner-friendly; share the branch when you're ready."
+        elif re.search(r"\b(?:returning|played\s+before|already\s+played|been\s+there|third\s+time|second\s+time)\b", lowered):
+            if not inbound.memory.data.get("participants"):
+                repaired = "Welcome back. Share the group size when you're ready."
+            else:
+                repaired = "Welcome back. Share the branch when you're ready."
+        elif re.search(r"\b(?:adult|adults|kids|children|family|couple|people|players)\b", lowered):
+            repaired = "Got it. Share the branch when you're ready." if recent_core_repeated else "Got it. Which branch works best: Whitefield, Koramangala, or JP Nagar?"
+        else:
+            repaired = "Which branch works best: Whitefield, Koramangala, or JP Nagar?"
+    else:
+        repaired = f"Got it. {current}"
+
+    result.response = repaired
+    agent_turns[-1]["content"] = repaired
+    inbound.memory.save()
+
+
+def _has_substantive_answer_before_question(response: str) -> bool:
+    lowered = response.lower()
+    if lowered.startswith(("i've noted", "got it. i've noted")):
+        return False
+    substantive_markers = (
+        "food options", "rooms", "murder mystery", "hostage", "locked",
+        "50 minutes", "experience", "cancellation", "refund", "parking",
+        "available room", "escape room", "detail to hand", "call you back",
+    )
+    return any(marker in lowered for marker in substantive_markers)
+
+
+def _question_core(response: str) -> str:
+    lowered = response.lower()
+    if "which location" in lowered or "which branch" in lowered or "location would you prefer" in lowered:
+        return "location"
+    if "how many" in lowered or "players are joining" in lowered or "people are joining" in lowered:
+        return "participants"
+    if "what date" in lowered:
+        return "date"
+    if "which time" in lowered or "time works" in lowered:
+        return "slot"
+    if "phone" in lowered:
+        return "phone"
+    if "name" in lowered:
+        return "name"
+    return ""
 
 
 def dispatch(
@@ -220,10 +324,34 @@ def dispatch(
     """
     try:
         import os
+        message = inbound.memory.normalize_entity_aliases(message)
+        if _is_additional_booking_request(message) and (
+            inbound.memory.data.get("completed_booking")
+            or inbound.memory.data.get("booking_id")
+            or inbound.memory.data.get("payment_link")
+            or inbound.memory.data.get("booking_started")
+        ):
+            _start_additional_booking(inbound)
+            booking = None
+            active_agent = "inbound_agent"
         sentiment = _observe_customer_sentiment(message, inbound)
         demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+        guard_result = None
+        if not _is_state_changing_booking_turn(message, inbound.memory):
+            guard_result = ConversationGuard(inbound.memory).evaluate(message, active_agent)
+        if guard_result is not None:
+            guard_result = _enrich_conversation_result(message, inbound, guard_result, sentiment)
+            return guard_result, booking, guard_result.next_agent
         manager = ConversationManager(inbound.memory)
         target_agent, category = manager.determine_routing(message, active_agent)
+        if (
+            demo_mode
+            and target_agent == "booking_agent"
+            and active_agent != "booking_agent"
+            and not inbound.memory.handoff_ready(str(inbound.memory.data.get("intent", "escape_room_inquiry")))
+        ):
+            target_agent = "inbound_agent"
+            category = "continuing_workflow"
         if target_agent == "booking_agent":
             current_intent = str(inbound.memory.data.get("intent", ""))
             detected_intent = manager.intent_detector.detect(message, previous_intent=current_intent).intent
@@ -235,6 +363,24 @@ def dispatch(
                     else "escape_room_inquiry"
                 )
             inbound.memory.merge_message(message, booking_intent)
+            if (
+                booking_intent == "escape_room_inquiry"
+                and not inbound.memory.data.get("room")
+                and inbound.memory.data.get("recommended_option")
+            ):
+                recommended = str(inbound.memory.data.get("recommended_option") or "").strip()
+                room_names = [
+                    room
+                    for room in inbound.recommender.available_options(inbound.memory.data, limit=10)
+                    if room.lower() in recommended.lower()
+                ]
+                inbound.memory.set_field(
+                    "room",
+                    room_names[0] if room_names else recommended,
+                    message,
+                    expected_field="room",
+                )
+                inbound.memory.data["recommended_option"] = inbound.memory.data.get("room")
             inbound.memory.data["booking_started"] = True
             inbound.memory.data["current_workflow"] = "booking"
             inbound.memory.data["booking_consent_pending"] = False
@@ -265,7 +411,14 @@ def dispatch(
             detected = manager.intent_detector.detect(message, previous_intent="").intent
             if detected in {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}:
                 requested_intent = detected
-        is_actual_topic_switch = bool(requested_intent and current_intent and requested_intent != current_intent)
+        # General FAQ is the normal entry state. Moving from it into the first
+        # booking flow must retain facts already volunteered during intake.
+        is_actual_topic_switch = bool(
+            requested_intent
+            and current_intent
+            and current_intent != "general_faq"
+            and requested_intent != current_intent
+        )
         extracted_participants = inbound.memory._extract_participants(
             inbound.memory.normalize_number_words(message).lower()
         )
@@ -279,12 +432,21 @@ def dispatch(
         )
 
         if is_actual_topic_switch or is_replacement_group:
+            continuity = {
+                "customer_name": inbound.memory.data.get("customer_name", ""),
+                "first_name": inbound.memory.data.get("first_name", ""),
+                "last_name": inbound.memory.data.get("last_name", ""),
+                "phone": inbound.memory.data.get("phone", ""),
+                "email": inbound.memory.data.get("email", ""),
+                "age_group": inbound.memory.data.get("age_group", ""),
+                "experience_level": inbound.memory.data.get("experience_level", ""),
+            }
             fields_to_clear = [
-                "location", "participants", "participants_min", "participants_max", "age_group", "experience_level",
+                "location", "participants", "participants_min", "participants_max", "relationship", "age_group", "experience_level",
                 "company_size", "event_type", "preferred_date", "food_required",
-                "budget_range", "intent", "recommended_option", "room",
+                "preferred_time", "preferred_period", "budget_range", "intent", "recommended_option", "room",
                 "selected_slot", "booking_id", "booking_ref", "booking_order_id",
-                "completed_booking", "booking_started",
+                "payment_link", "whatsapp_payload", "completed_booking", "booking_started",
             ]
             for field in fields_to_clear:
                 inbound.memory.data[field] = ""
@@ -293,6 +455,8 @@ def dispatch(
             inbound.memory.data["concerns"] = []
             inbound.memory.data["current_workflow"] = "general"
             inbound.memory.data["booking_consent_pending"] = False
+            if inbound.memory.data.get("previous_bookings"):
+                inbound.memory.data.update({key: value for key, value in continuity.items() if value})
             inbound.qualification_agent._waiting_for = ""
             inbound.memory.save()
 
@@ -370,6 +534,82 @@ def dispatch(
         )
         fallback_result = _enrich_conversation_result(message, inbound, fallback_result, sentiment)
         return fallback_result, booking, "inbound_agent"
+
+
+def _is_additional_booking_request(message: str) -> bool:
+    lowered = message.lower()
+    return bool(
+        re.search(
+            r"\b(?:another|second|new|also)\s+(?:booking|room|game|slot|reservation)\b|"
+            r"\bi\s+also\s+want\s+(?:to\s+book|another)|\bbook\s+another\b",
+            lowered,
+        )
+    )
+
+
+def _is_state_changing_booking_turn(message: str, memory: ConversationMemory) -> bool:
+    lowered = message.lower()
+    if _is_additional_booking_request(message):
+        return True
+    has_change_word = bool(
+        re.search(r"\b(?:actually|change|switch|instead|make it|update|modify|reschedule|use)\b", lowered)
+    )
+    if not has_change_word:
+        return False
+    normalized = memory.normalize_number_words(memory.normalize_entity_aliases(message)).lower()
+    return bool(
+        memory._extract_room(normalized)
+        or memory._extract_location(normalized)
+        or memory._extract_preferred_date(message)
+        or memory._extract_time(message)
+        or memory._extract_participants(normalized)
+        or memory._extract_participant_range(normalized)
+    )
+
+
+def _start_additional_booking(inbound: InboundAgent) -> None:
+    memory = inbound.memory
+    previous = {
+        field: memory.data.get(field, "")
+        for field in (
+            "booking_id", "booking_ref", "booking_order_id", "location", "room",
+            "preferred_date", "selected_slot", "participants", "customer_name", "phone",
+            "payment_link",
+        )
+        if memory.data.get(field)
+    }
+    if previous:
+        memory.data.setdefault("previous_bookings", [])
+        if isinstance(memory.data["previous_bookings"], list):
+            memory.data["previous_bookings"].append(previous)
+            memory.data["previous_bookings"] = memory.data["previous_bookings"][-5:]
+
+    preserve = {
+        "customer_name": memory.data.get("customer_name", ""),
+        "first_name": memory.data.get("first_name", ""),
+        "last_name": memory.data.get("last_name", ""),
+        "phone": memory.data.get("phone", ""),
+        "email": memory.data.get("email", ""),
+        "age_group": memory.data.get("age_group", ""),
+        "experience_level": memory.data.get("experience_level", ""),
+    }
+    for field in [
+        "location", "participants", "participants_min", "participants_max", "relationship",
+        "age_group", "age_detail", "experience_level", "challenge_preference",
+        "company_size", "event_type", "preferred_date", "preferred_time", "preferred_period",
+        "food_required", "budget_range", "room", "intent", "recommended_option",
+        "selected_slot", "booking_id", "booking_ref", "booking_order_id",
+        "payment_link", "whatsapp_payload",
+        "completed_booking", "booking_started", "booking_consent_pending",
+    ]:
+        memory.data[field] = "" if field not in {"booking_consent_pending", "completed_booking", "booking_started"} else False
+    memory.data.update(preserve)
+    memory.data["current_workflow"] = "general"
+    memory.data["discussed_options"] = []
+    memory.data["customer_preferences"] = []
+    memory.data["concerns"] = []
+    inbound.qualification_agent._waiting_for = ""
+    memory.save()
 
 
 

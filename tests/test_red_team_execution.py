@@ -177,21 +177,25 @@ class TestA_BookingFlow:
             "FAIL A027: booking_ready() returned True with 0 participants"
         )
 
-    # A003 — Agent skips last name when only first name given
-    def test_A003_agent_requests_last_name_after_first_name(self, tmp_path):
+    # A003 — Agent accepts single-word name and proceeds to phone
+    def test_A003_agent_accepts_single_word_name_before_phone(self, tmp_path):
         """
         SCENARIO: User gives first name only at name-collection step.
-        EXPECTED: Agent asks for last name before proceeding.
+        EXPECTED: Agent stores the name and asks for phone without forcing last name.
         """
-        mem = make_full_memory(tmp_path, customer_name="", first_name="", last_name="", phone="9876543210")
+        mem = make_full_memory(tmp_path, customer_name="", first_name="", last_name="", phone="")
         agent = BookingAgent(mem)
         agent._state = agent._STATE_WAITING_FOR_FIRST_NAME
         agent._selected_slot = "3:00 PM"
 
         result = agent.handle_message("Priya")
         assert mem.data.get("first_name") == "Priya", "FAIL A003: first_name not stored"
-        assert "last name" in result.response.lower(), (
-            "FAIL A003: Agent did not ask for last name after capturing first name"
+        assert mem.data.get("customer_name") == "Priya", "FAIL A003: customer_name not stored"
+        assert "phone" in result.response.lower(), (
+            "FAIL A003: Agent did not proceed to phone after capturing name"
+        )
+        assert "last name" not in result.response.lower(), (
+            "FAIL A003: Agent still forced last name after capturing name"
         )
 
 

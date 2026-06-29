@@ -30,14 +30,13 @@ def test_humanization_no_repeated_questions(tmp_path: Path) -> None:
     assert agent.memory.data["participants"] == 7
     # Should not ask for participants again.
     assert "how many people" not in res["response"].lower()
-    assert "age group" in res["response"].lower()
+    assert "escape room before" in res["response"].lower() or "first one" in res["response"].lower()
 
 
 def test_humanization_acknowledgement_and_explanation_before_qualification(tmp_path: Path) -> None:
     agent = make_human_agent(tmp_path)
     res = agent.handle_message("We want an escape room.")
-    # Check that qualification questions include context/explanation
-    assert "suggest the perfect game" in res["response"] or " Bangalore locations" in res["response"] or "thinking of visiting" in res["response"]
+    assert res["response"] == "How many people are joining?"
 
 
 def test_humanization_recommendation_before_qualification(tmp_path: Path) -> None:
@@ -47,10 +46,9 @@ def test_humanization_recommendation_before_qualification(tmp_path: Path) -> Non
     # First, age group question should appear (no recommendation yet without age_group)
     assert "adult" in res["response"].lower() or "kids" in res["response"].lower() or "age" in res["response"].lower()
 
-    # After providing age_group, recommendation appears
+    # After providing age_group, the agent asks location instead of recommending unprompted.
     res2 = agent.handle_message("We are all adults.")
-    assert "Murder Mystery" in res2["response"]
-    assert "Hostage" in res2["response"]
+    assert res2["response"] == "Which location would you like to visit?"
 
 
 def test_humanization_rapport_and_reassurance_faq(tmp_path: Path) -> None:
@@ -75,13 +73,11 @@ def test_regression_friends_and_first_time_players(tmp_path: Path) -> None:
     response_text = res["response"]
     
     # New flow: age_group question comes first (no recommendation without age_group)
-    assert response_text.startswith(("Awesome", "Nice", "That sounds like"))
     assert "adult" in response_text.lower() or "kids" in response_text.lower() or "age" in response_text.lower()
     assert "Good question." not in response_text
     assert "Let me get that checked for you." not in response_text
 
-    # After providing age_group, recommendation should appear
+    # After providing age_group, location comes before recommendation.
     res2 = agent.handle_message("We are all adults.")
     response_text2 = res2["response"]
-    assert "Murder Mystery" in response_text2
-    assert "Hostage" in response_text2
+    assert response_text2 == "Which location would you like to visit?"

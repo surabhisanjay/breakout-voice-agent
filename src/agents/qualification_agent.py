@@ -53,10 +53,10 @@ class QualificationAgent:
 
     QUESTIONS = {
         "event_type": "Sure. What kind of event are you planning?",
-        "participants": "Got it. How many people are joining?",
-        "location": "Nice. Which location works best: Koramangala, Whitefield, or JP Nagar?",
+        "participants": "How many people are joining?",
+        "location": "Which location would you like to visit?",
         "preferred_date": "Got it. What date are you planning for?",
-        "age_group": "Perfect. What's the age group: adults, kids, or a mix?",
+        "age_group": "What age group are the players: adults, kids, or a mix?",
         "food_required": "Sounds good. Do you need food and beverages as well?",
         "budget_range": "Got it. What's the budget range: Basic, Standard, or Premium?",
         "customer_name": "Perfect. What's your name?",
@@ -66,15 +66,15 @@ class QualificationAgent:
 
     # Warm acknowledgment spoken before the next question
     _ACK_PREFIXES: dict[str, str] = {
-        "location": "Perfect.",
-        "preferred_date": "Nice.",
+        "location": "",
+        "preferred_date": "",
         "preferred_time": "Got it.",
         "customer_name": "",          # filled dynamically using the name
-        "phone": "Perfect.",
+        "phone": "",
         "food_required": "Got it.",
         "budget_range": "Sounds good.",
-        "participants": "Nice.",
-        "age_group": "Perfect.",
+        "participants": "",
+        "age_group": "",
         "email": "Got it.",
     }
 
