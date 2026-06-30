@@ -68,7 +68,7 @@ _AFFIRMATIVES = frozenset({
 })
 
 _BOOKING_TRIGGERS = re.compile(
-    r"\b(?:i want to book|want to book|can i book|book it|book now|book a|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book|book that)\b",
+    r"\b(?:i want to book|want to book|i want to make a booking|want to make a booking|make a booking|make booking|can i book|book it|book now|book a|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book|book that)\b",
     re.IGNORECASE,
 )
 

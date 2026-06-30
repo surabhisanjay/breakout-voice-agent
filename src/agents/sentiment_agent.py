@@ -26,7 +26,7 @@ class SentimentAgent:
 
     SIGNALS: tuple[tuple[str, tuple[str, ...], float], ...] = (
         ("angry", ("unacceptable", "ridiculous", "furious", "very angry", "terrible service", "useless"), 0.94),
-        ("frustrated", ("frustrated", "you keep asking", "not listening", "i already told", "this is wrong", "again and again", "still not working"), 0.88),
+        ("frustrated", ("frustrated", "you keep asking", "not listening", "i already told", "this is wrong", "again and again", "still not working", "you're not helping", "you are not helping", "called multiple times"), 0.88),
         ("confused", ("confused", "don't understand", "do not understand", "what do you mean", "not clear", "unclear"), 0.82),
         ("urgent", ("urgent", "as soon as possible", "asap", "running late", "in a hurry", "right now", "last minute"), 0.84),
         ("hesitant", ("not sure", "maybe", "need to think", "check with", "not ready", "don't confirm", "do not confirm", "in a dilemma"), 0.80),

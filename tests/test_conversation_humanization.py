@@ -30,7 +30,7 @@ def test_humanization_no_repeated_questions(tmp_path: Path) -> None:
     assert agent.memory.data["participants"] == 7
     # Should not ask for participants again.
     assert "how many people" not in res["response"].lower()
-    assert "age group" in res["response"].lower()
+    assert "first escape room" in res["response"].lower() or "experienced" in res["response"].lower()
 
 
 def test_humanization_acknowledgement_and_explanation_before_qualification(tmp_path: Path) -> None:
@@ -74,8 +74,7 @@ def test_regression_friends_and_first_time_players(tmp_path: Path) -> None:
     
     response_text = res["response"]
     
-    # New flow: age_group question comes first (no recommendation without age_group)
-    assert response_text.startswith(("Awesome", "Nice", "That sounds like"))
+    assert response_text.startswith(("Awesome", "Nice", "That sounds like", "Perfect"))
     assert "adult" in response_text.lower() or "kids" in response_text.lower() or "age" in response_text.lower()
     assert "Good question." not in response_text
     assert "Let me get that checked for you." not in response_text

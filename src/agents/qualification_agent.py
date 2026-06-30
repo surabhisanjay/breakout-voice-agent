@@ -56,7 +56,7 @@ class QualificationAgent:
         "participants": "Got it. How many people are joining?",
         "location": "Nice. Which location works best: Koramangala, Whitefield, or JP Nagar?",
         "preferred_date": "Got it. What date are you planning for?",
-        "age_group": "Perfect. What's the age group: adults, kids, or a mix?",
+        "age_group": "Is the group mostly adults, kids, or a mix? That'll help me recommend the best experience for your group.",
         "food_required": "Sounds good. Do you need food and beverages as well?",
         "budget_range": "Got it. What's the budget range: Basic, Standard, or Premium?",
         "customer_name": "Perfect. What's your name?",
@@ -190,6 +190,48 @@ class QualificationAgent:
         if field == "preferred_time":
             preferred_time = str(self.memory.data.get("preferred_time", "")).strip()
             return f"Got it, {preferred_time}." if preferred_time else "Got it."
+        if field == "participants":
+            participants = self.memory.data.get("participants") or self.memory.data.get("company_size")
+            if participants:
+                event_type = str(self.memory.data.get("event_type", "")).lower()
+                if "corporate" in event_type or "team" in event_type:
+                    return f"Perfect, a team of {participants} is a great group size. You guys are going to have a lot of fun together."
+                else:
+                    return f"Perfect, {participants} players is a great group size. You guys are going to have a lot of fun together."
+            return "Nice."
+        if field == "location":
+            location = self.memory.data.get("location", "")
+            if location:
+                return f"Perfect, {location} is a fantastic spot. We have some really exciting rooms there."
+            return "Perfect."
+        if field == "experience_level":
+            level = self.memory.data.get("experience_level", "")
+            if level == "beginner":
+                return "Awesome, first visits are a lot of fun. We'll find the perfect room for you."
+            elif level == "experienced":
+                return "Awesome, experienced players! You guys are going to love the challenge here."
+        if field == "age_group":
+            age = str(self.memory.data.get("age_group", "")).lower()
+            if age == "kids":
+                return "Perfect, kids are going to have an absolute blast."
+            elif age == "adults":
+                return "Got it, an adult group."
+            elif age == "mix":
+                return "Perfect, a mix of players is great for escape rooms."
+            return f"Got it, {age}." if age else "Perfect."
+        if field == "food_required":
+            food = self.memory.data.get("food_required")
+            if food is True:
+                return "Got it, food options make hosting so much easier."
+            elif food is False:
+                return "No worries, we can focus entirely on the games."
+        if field == "budget_range":
+            budget = str(self.memory.data.get("budget_range", "")).lower()
+            if budget == "premium":
+                return "Perfect, our premium packages include all the best details."
+            elif budget == "basic":
+                return "No worries, we can keep it simple and focused."
+            return f"Got it, {budget}." if budget else "Sounds good."
         return self._ACK_PREFIXES.get(field, "")
 
     # ------------------------------------------------------------------ #

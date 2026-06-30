@@ -133,13 +133,13 @@ class BreakoutAPI:
         method: str = "POST",
     ) -> dict[str, Any]:
         """Invoke a tool exposed by Kreeda's MCP-style REST contract."""
-        result = self._request(method, f"/agent/v1.0/tools/{name}", payload=payload)
+        result = self._request(method, f"/v1.0/tools/{name}", payload=payload or {})
         if not isinstance(result, dict):
             raise BreakoutAPIError(f"Kreeda tool {name} returned a non-object response.", code="INVALID_RESPONSE")
         return result
 
     def get_booking_venues(self) -> list[dict[str, Any]]:
-        return self._as_list(self.call_agent_tool("get_venues", method="GET"))
+        return self._as_list(self.call_agent_tool("get_venues"))
 
     def get_booking_games(self, venue_id: str) -> list[dict[str, Any]]:
         return self._as_list(self.call_agent_tool("get_available_games", {"venueId": venue_id}))

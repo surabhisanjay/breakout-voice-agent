@@ -91,6 +91,9 @@ class TranscriptLogger:
             "handoff_summary": result.get("handoff_summary"),
             "sentiment_analysis": result.get("sentiment_analysis", {}),
             "escalation": result.get("escalation", {}),
+            "scoring": result.get("scoring", {}),
+            "learning_metrics": result.get("learning_metrics", {}),
+            "metrics_report": result.get("metrics_report", {}),
             "collected_context": {
                 key: value
                 for key, value in memory.items()

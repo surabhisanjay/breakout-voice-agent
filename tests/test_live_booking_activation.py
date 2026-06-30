@@ -90,9 +90,9 @@ def test_breakout_api_uses_discovered_tool_routes(monkeypatch) -> None:
     assert client.create_instant_cart({"venueId": "venue-1", "slots": [{}]})["cartId"] == "cart-1"
     assert client.create_confirmed_booking({"venueId": "venue-1", "cartId": "cart-1"})["bookingId"] == "bk-1"
     assert calls == [
-        ("GET", "/agent/v1.0/tools/get_venues", {}),
-        ("POST", "/agent/v1.0/tools/create_instant_cart", {"venueId": "venue-1", "slots": [{}]}),
-        ("POST", "/agent/v1.0/tools/create_booking", {"venueId": "venue-1", "cartId": "cart-1"}),
+        ("POST", "/v1.0/tools/get_venues", {}),
+        ("POST", "/v1.0/tools/create_instant_cart", {"venueId": "venue-1", "slots": [{}]}),
+        ("POST", "/v1.0/tools/create_booking", {"venueId": "venue-1", "cartId": "cart-1"}),
     ]
 
 
@@ -292,7 +292,7 @@ def test_live_availability_preserves_slots_but_marks_group_capacity_unsupported(
         contract_provider=MagicMock(spec=AgentContractProvider),
     )
 
-    result = orchestrator.check_availability("Whitefield", "25 June", 11, "Undercover")
+    result = orchestrator.check_availability("Whitefield", "2027-06-25", 11, "Undercover")
 
     assert result["available"] is True
     assert result["slots"] == ["3:00 PM"]

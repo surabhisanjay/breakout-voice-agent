@@ -85,9 +85,45 @@ def test_room_name_typo_fallback(tmp_path: Path) -> None:
 def test_generic_booking_asks_event_type(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("I want to book")
-    assert "type of event" in result["response"].lower()
+    assert "is this for" in result["response"].lower()
     assert "escape room" in result["response"].lower()
+    assert "great!" not in result["response"].lower()
+    assert "i can help" not in result["response"].lower()
     assert agent.memory.data["intent"] == "general_faq"
+
+
+def test_make_a_booking_asks_event_type(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    result = agent.handle_message("I want to make a booking.")
+
+    assert "is this for" in result["response"].lower()
+    assert "escape room" in result["response"].lower()
+    assert "call you back" not in result["response"].lower()
+    assert agent.memory.data["intent"] == "general_faq"
+
+
+def test_generic_booking_accepts_short_escape_clarification(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.handle_message("I want to book")
+
+    result = agent.handle_message("An escape")
+
+    assert result["intent"] == "escape_room_inquiry"
+    assert agent.memory.data["intent"] == "escape_room_inquiry"
+    assert agent.memory.data["event_type"] == "Escape Room"
+    assert "how many" in result["response"].lower()
+    assert "didn't catch" not in result["response"].lower()
+    assert "call you back" not in result["response"].lower()
+
+
+def test_booking_response_cleanup_removes_overeager_assistant_filler() -> None:
+    raw = (
+        "Great! I can help you with your booking. Could you please tell me "
+        "which escape room or experience you're interested in?"
+    )
+    cleaned = InboundAgent._clean_response(raw)
+
+    assert cleaned == "Awesome! We'd love to host you. Is this for an escape room with friends, or are you planning something special like a birthday or team event?"
 
 
 def test_direct_escape_room_booking_asks_participants_first(tmp_path: Path) -> None:
@@ -105,7 +141,7 @@ def test_escape_room_inquiry_bare_number_captures_participants(tmp_path: Path) -
     assert agent.memory.data["participants"] == 10
     assert result["intent"] == "escape_room_inquiry"
     # New flow: age_group is asked before location
-    assert "age" in result["response"].lower() or "adults" in result["response"].lower()
+    assert "first escape room" in result["response"].lower() or "experienced" in result["response"].lower()
 
 
 def test_escape_room_inquiry_approx_number_captures_participants(tmp_path: Path) -> None:
@@ -116,7 +152,7 @@ def test_escape_room_inquiry_approx_number_captures_participants(tmp_path: Path)
     assert agent.memory.data["participants"] == 10
     assert result["intent"] == "escape_room_inquiry"
     # New flow: age_group is asked before location
-    assert "age" in result["response"].lower() or "adults" in result["response"].lower()
+    assert "first escape room" in result["response"].lower() or "experienced" in result["response"].lower()
 
 
 def test_active_escape_room_flow_preserves_intent_on_noisy_whisper_transcript(tmp_path: Path) -> None:
@@ -203,7 +239,7 @@ def test_explicit_booking_clear_stale_memory(tmp_path: Path) -> None:
 
     result = agent.handle_message("I want to book")
 
-    assert "type of event" in result["response"].lower()
+    assert "is this for" in result["response"].lower()
     assert agent.memory.data["location"] == ""
     assert agent.memory.data["participants"] == ""
     assert agent.memory.data["age_group"] == ""
@@ -529,25 +565,26 @@ def test_show_memory_command_outputs_current_memory(monkeypatch, capsys, tmp_pat
 def test_cancellation_faq(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("What are your cancellation policies?")
-    assert "Cancellation charges" in result["response"]
-    assert "appropriate team" in result["response"]
+    assert "full refund" in result["response"]
+    assert "75% refund" in result["response"]
+    assert "not refundable" in result["response"]
 
 
 def test_booking_phrase_triggers_help_prompt(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("I want to book")
-    assert result["response"].lower().startswith("sure")
+    assert result["response"].lower().startswith("awesome")
 
 def test_booking_phrase_with_variation(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("Can I book a slot?")
-    assert result["response"].lower().startswith("sure")
+    assert result["response"].lower().startswith("awesome")
 
 
 def test_booking_it_triggers_help_prompt(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("Book it")
-    assert result["response"].lower().startswith("sure")
+    assert result["response"].lower().startswith("awesome")
 
 
 def test_booking_after_location_and_room_starts_booking_flow(tmp_path: Path) -> None:
@@ -621,7 +658,7 @@ def test_typo_kidss_corrects_adult_recommendation(tmp_path: Path) -> None:
 def test_booking_question_triggers_help_prompt(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("How do I book?")
-    assert result["response"].lower().startswith("sure")
+    assert result["response"].lower().startswith("awesome")
 
 
 def test_budget_question_triggers_sales_prompt(tmp_path: Path) -> None:
@@ -852,7 +889,9 @@ def test_final_demo_scenarios(tmp_path: Path) -> None:
     assert "Breakout Escape Rooms" in agent.handle_message("Hi, is this Breakout?")["response"]
     assert "Koramangala" in agent.handle_message("What locations do you have?")["response"]
     assert "parking" in agent.handle_message("Is parking available?")["response"].lower()
-    assert "Cancellation charges" in agent.handle_message("What is your cancellation policy?")["response"]
+    policy = agent.handle_message("What is your cancellation policy?")["response"]
+    assert "full refund" in policy
+    assert "not refundable" in policy
 
     adult_agent = make_agent(tmp_path / "adult")
     adult = adult_agent.handle_message("We are six adults visiting Whitefield.")["response"]
@@ -1437,15 +1476,18 @@ def test_case_1_seven_friends_first_time(tmp_path: Path) -> None:
     # 7 friends should set participants to 7
     r2 = agent.handle_message("We're a group of 7 friends.")["response"]
     assert agent.memory.data["participants"] == 7
-    assert "age group" in r2.lower()
+    assert "first escape room" in r2.lower() or "experienced" in r2.lower()
     
-    # First time should trigger beginner recommendation and resume qualification
+    # First time should set experience level to beginner and ask age group
     r3 = agent.handle_message("None of us have done an escape room before.")["response"]
     assert agent.memory.data["experience_level"] == "beginner"
-    assert "Murder Mystery" in r3
-    assert "Hostage" in r3
-    # Check that it resumes qualification
     assert "adults, kids, or a mix" in r3.lower()
+    
+    # After providing age group, recommendation should trigger and ask location
+    r4 = agent.handle_message("We are all adults.")["response"]
+    assert "Murder Mystery" in r4
+    assert "Hostage" in r4
+    assert "location" in r4.lower() or "koramangala" in r4.lower()
 
 
 def test_first_time_friends_receive_recommendation_before_qualification(tmp_path: Path) -> None:
@@ -1872,8 +1914,8 @@ def test_stabilization_voice_fix_regression(tmp_path: Path) -> None:
     # This should set participants = 7
     res = agent.handle_message("We are a group of seven friends.")
     assert agent.memory.data["participants"] == 7
-    # Next missing field should be age_group, so it should ask for age group.
-    assert "age group" in res["response"].lower()
+    # Next missing field should be age_group, so it should ask for experience level first.
+    assert "first escape room" in res["response"].lower() or "experienced" in res["response"].lower()
     assert agent.qualification_agent._waiting_for == "age_group"
     
     # Step 2: User says: "They are all adults."

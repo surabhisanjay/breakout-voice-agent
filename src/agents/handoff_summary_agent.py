@@ -44,6 +44,7 @@ class HandoffSummaryAgent:
             facts.append(f"Outstanding: {', '.join(outstanding)}.")
 
         return {
+            "call_id": memory.get("call_id", ""),
             "customer_name": memory.get("customer_name", ""),
             "phone": memory.get("phone", ""),
             "intent": intent,
@@ -57,8 +58,15 @@ class HandoffSummaryAgent:
             "booking_id": memory.get("booking_id", ""),
             "booking_ref": memory.get("booking_ref", ""),
             "booking_status": booking_status,
+            "payment_status": memory.get("payment_status", "not_started"),
             "sentiment": memory.get("sentiment", "neutral"),
             "escalation_reason": escalation_state.get("reason", ""),
+            "escalation_category": escalation_state.get("category", ""),
+            "priority": escalation_state.get("priority", "normal"),
+            "support_ticket_id": escalation_state.get("support_ticket_id", ""),
+            "transfer_status": escalation_state.get("transfer_status", "not_required"),
+            "recommended_next_action": escalation_state.get("recommended_action", ""),
+            "transcript": list(memory.get("conversation", [])),
             "outstanding_questions": outstanding,
             "summary": " ".join(facts),
         }

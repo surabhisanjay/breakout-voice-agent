@@ -66,6 +66,12 @@ class AgentResponse:
     """Current customer sentiment metadata; never spoken to the customer."""
     escalation: dict = field(default_factory=dict)
     """Escalation recommendation metadata; routing remains deterministic."""
+    scoring: dict = field(default_factory=dict)
+    """Numeric turn/session scoring for analytics; never spoken to the customer."""
+    learning_metrics: dict = field(default_factory=dict)
+    """Aggregated learning metrics accumulated across the session."""
+    metrics_report: dict = field(default_factory=dict)
+    """Detailed report snapshot for dashboards and API consumers."""
     debug: dict = field(default_factory=dict)
     """Compatibility field with surabhi/main containing state snapshot and entities."""
 
@@ -93,6 +99,9 @@ class AgentResponse:
             "booking": self.booking,
             "sentiment_analysis": self.sentiment_analysis,
             "escalation": self.escalation,
+            "scoring": self.scoring,
+            "learning_metrics": self.learning_metrics,
+            "metrics_report": self.metrics_report,
             "debug": self.debug,
             "state": self.state,
             # Legacy key used by some older test assertions

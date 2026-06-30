@@ -371,7 +371,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
         "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
     }]
     provider.search_booking_slots.return_value = [{
-            "eventId": "event-7pm", "gameId": "murder-1", "date": "2026-06-25",
+            "eventId": "event-7pm", "gameId": "murder-1", "date": "2027-06-25",
         "time": "19:00", "available": 7, "isAvailable": True,
     }]
     provider.create_instant_cart.return_value = {"cartId": "cart-e2e"}
@@ -386,7 +386,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
     memory.data.update({
         "intent": "escape_room_inquiry", "event_type": "Escape Room",
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
-        "preferred_date": "25 June", "room": "Murder Mystery",
+        "preferred_date": "2027-06-25", "room": "Murder Mystery",
     })
     memory.save()
     agent = BookingAgent(memory, orchestrator=orchestrator)
@@ -516,7 +516,7 @@ def test_cart_is_reused_after_last_name_api_failure(
         "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
     }]
     provider.search_booking_slots.return_value = [{
-            "eventId": "event-7pm", "gameId": "murder-1", "date": "2026-06-25",
+            "eventId": "event-7pm", "gameId": "murder-1", "date": "2027-06-25",
         "time": "19:00", "available": 7, "isAvailable": True,
     }]
     provider.create_instant_cart.return_value = {"cartId": "cart-reused"}
@@ -534,12 +534,12 @@ def test_cart_is_reused_after_last_name_api_failure(
     memory.data.update({
         "intent": "escape_room_inquiry", "event_type": "Escape Room",
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
-        "preferred_date": "25 June", "room": "Murder Mystery",
+        "preferred_date": "2027-06-25", "room": "Murder Mystery",
         "selected_slot": "7:00 PM", "customer_name": "Sadad Khanilwal",
         "first_name": "Sadad", "last_name": "Khanilwal", "phone": "9982235470",
     })
     memory.save()
-    availability = orchestrator.check_availability("JP Nagar", "25 June", 4, "Murder Mystery")
+    availability = orchestrator.check_availability("JP Nagar", "2027-06-25", 4, "Murder Mystery")
     agent = BookingAgent(memory, orchestrator=orchestrator)
     agent._state = agent._STATE_READY_FOR_BOOKING
     agent._selected_slot = "7:00 PM"

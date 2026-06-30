@@ -18,6 +18,7 @@ from ..orchestration.router import Router, RouteDecision
 from ..services.conversation_intelligence import ConversationIntelligenceLayer
 from ..core.conversation_modes import ConversationModeDetector
 from ..response_composer import ResponseComposer
+from ..knowledge.policy_answers import CANCELLATION_POLICY_RESPONSE, is_cancellation_policy_question
 
 class InboundAgent:
     def __init__(
@@ -176,6 +177,37 @@ class InboundAgent:
             )
 
         self.memory.add_turn("customer", message)
+
+        # Policy questions preempt qualification and booking handoff. Answer
+        # from the approved policy immediately, including on a fresh session.
+        if is_cancellation_policy_question(normalized_message):
+            response = self._cancellation_policy_explanation()
+            resume = self._resume_qualification_phrase(waiting_before) if waiting_before else ""
+            if resume:
+                response = f"{response} {resume}"
+            self.memory.data["pending_policy_explanation"] = False
+            self.memory.add_turn("agent", response)
+            self.memory.save()
+            self._print_instrumentation(self.start_turn, source="deterministic_template")
+            return AgentResponse(
+                response=response,
+                intent="general_faq",
+                intent_confidence=1.0,
+                next_agent="inbound_agent",
+                should_handoff=False,
+                state=self.memory.as_state(),
+                missing_fields=[],
+                recommendation={"option": "", "reason": ""},
+                qualification={"qualified": False, "missing_fields": [], "next_question": "", "summary": {}},
+                handoff_summary=None,
+                booking=None,
+                debug={
+                    "previous_state": previous_state,
+                    "extracted_entities": {},
+                    "updated_state": self._state_snapshot(),
+                    "missing_slots": [],
+                },
+            )
 
         if self.memory.data.get("completed_booking"):
             faq_answer = self._get_faq_or_knowledge_answer(normalized_message, "general_faq", None)
@@ -357,6 +389,19 @@ class InboundAgent:
                 pending_offer=pending_offer if not waiting_before else None,
             )
             active_intent = intent_result.intent
+            clarified_intent = self._clarified_booking_intent(normalized_message)
+            if (
+                clarified_intent
+                and active_intent_stored in ("", "general_faq")
+                and self.memory.data.get("conversation_mode") == "booking"
+            ):
+                intent_result = IntentResult(
+                    clarified_intent,
+                    0.88,
+                    "clarified generic booking event type",
+                    intent_result.entities,
+                )
+                active_intent = clarified_intent
             if intent_result.intent == "confirm_booking":
                 active_intent = (pending_offer or {}).get("intent") or active_intent_stored or "escape_room_inquiry"
             elif active_flow_intent and self._should_preserve_active_flow_intent(intent_result.intent, waiting_before):
@@ -881,7 +926,7 @@ class InboundAgent:
                     deterministic = self._fallback_response(
                         message, intent, recommendation, should_handoff, qual_result, waiting_before, core_changed=core_changed
                     )
-                    return deterministic or "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+                    return deterministic or "I apologize, I don't have that exact detail with me right now. Let me check with our team. Could I get your name and contact number so someone can call you back?"
                 elif llm_response:
                     self._last_resolved_source = "openai"
                     return llm_response
@@ -894,14 +939,14 @@ class InboundAgent:
                     deterministic = self._fallback_response(
                         message, intent, recommendation, should_handoff, qual_result, waiting_before, core_changed=core_changed
                     )
-                    return deterministic or "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+                    return deterministic or "I apologize, I don't have that exact detail with me right now. Let me check with our team. Could I get your name and contact number so someone can call you back?"
                 elif llm_response:
                     self._last_resolved_source = "openai"
                     return llm_response
                 else:
                     self._last_resolved_source = "deterministic_template"
 
-        fallback = "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+        fallback = "I apologize, I don't have that exact detail with me right now. Let me check with our team. Could I get your name and contact number so someone can call you back?"
         composed = self._compose_customer_response(fallback, message, intent)
         if "openai_failure" in self.response_composer.last_error:
             self._last_resolved_source = "fallback"
@@ -1118,11 +1163,8 @@ class InboundAgent:
             stored_name = str(self.memory.data.get("customer_name", "")).strip()
             return f"You're booked under {stored_name}." if stored_name else "I don't have your name yet."
 
-        if waiting_before and ("cancellation" in lowered or "cancel policy" in lowered or "refund policy" in lowered):
-            faq = (
-                "Cancellation charges depend on how far in advance the cancellation is made. "
-                "I can explain the policy without changing any booking, and the appropriate team can help with a cancellation or refund request."
-            )
+        if waiting_before and ("cancel" in lowered or "refund" in lowered):
+            faq = self._cancellation_policy_explanation()
             resume = self._resume_qualification_phrase(waiting_before)
             return f"{faq} {resume}" if resume else faq
 
@@ -1415,7 +1457,7 @@ class InboundAgent:
             return self._booking_consent_response()
 
         if re.search(
-            r"\b(i want to book|want to book|can i book|book it|book now|book a|book an|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book)\b",
+            r"\b(i want to book|want to book|i want to make a booking|want to make a booking|make a booking|make booking|can i book|book it|book now|book a|book an|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book)\b",
             lowered,
         ) and "escape room" in lowered and self.memory.data.get("participants") and not self.memory.data.get("experience_level"):
             participants = self.memory.data.get("participants")
@@ -1498,6 +1540,25 @@ class InboundAgent:
 
         return ""
 
+    @staticmethod
+    def _clarified_booking_intent(message: str) -> str:
+        lowered = message.lower().strip(" .!?")
+        if re.search(r"\b(?:an?\s+)?escape(?:\s+room)?(?:\s+visit)?\b", lowered):
+            return "escape_room_inquiry"
+        if re.search(r"\b(?:a\s+)?birthday(?:\s+party)?\b", lowered):
+            return "birthday_party"
+        if re.search(r"\b(?:a\s+)?corporate(?:\s+event)?\b|\bteam\s+(?:event|outing|building)\b", lowered):
+            return "corporate_event"
+        if re.search(r"\b(?:a\s+)?bachelor(?:\s+party)?\b", lowered):
+            return "bachelor_party"
+        if re.search(r"\b(?:a\s+)?farewell(?:\s+party)?\b", lowered):
+            return "farewell_party"
+        if re.search(r"\b(?:a\s+)?couple(?:\s+event)?\b|\banniversary\b", lowered):
+            return "couple_event"
+        if re.search(r"\bvirtual\b|\bonline\b", lowered):
+            return "virtual_event"
+        return ""
+
     def _answer_faq(self, lowered: str) -> str:
         if "is this" in lowered or "breakout" in lowered:
             return "Yes, this is Breakout Escape Rooms. How may I help you today?"
@@ -1559,7 +1620,7 @@ class InboundAgent:
                 return "JP Nagar has street parking and offers Murder Mystery, Hostage, and Prison Break."
         # Direct booking intent (user wants to book)
         if re.search(
-            r"\b(i want to book|want to book|can i book|book it|book now|book a|book an|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book)\b",
+            r"\b(i want to book|want to book|i want to make a booking|want to make a booking|make a booking|make booking|can i book|book it|book now|book a|book an|book for|reserve a|i want to reserve|how do i book|how can i book|how to book|how do you book|how do we book)\b",
             lowered,
         ):
             if re.search(r"\b(escape room|room|birthday|corporate|bachelor|farewell|couple|virtual|online|party)\b", lowered):
@@ -1568,7 +1629,7 @@ class InboundAgent:
                     return f"Nice. {participants} people sounds fun. Have you done an escape room before, or is this your first one?"
                 return "Sure. What location or date are you thinking of?"
             return (
-                "Sure. What type of event are you planning — an escape room, birthday party, corporate event, or something else?"
+                "Awesome! We'd love to host you. Is this for an escape room with friends, or are you planning something special like a birthday or team event?"
             )
         room_response = self._answer_room_name(lowered)
         if room_response:
@@ -1660,12 +1721,9 @@ class InboundAgent:
         if "where are you located" in lowered or "what are your locations" in lowered or "where is breakout" in lowered or "our locations" in lowered or "locations" in lowered or ("location" in lowered and any(w in lowered for w in ("which", "what", "better", "are", "have", "address", "list", "know", "where"))):
             return "Breakout has locations in Koramangala, Whitefield, and JP Nagar."
         if "cancel" in lowered or "refund" in lowered:
-            self.memory.data["pending_policy_explanation"] = True
+            self.memory.data["pending_policy_explanation"] = False
             self.memory.save()
-            return (
-                "Cancellation charges depend on how far in advance the cancellation is made. "
-                "I can explain the policy without changing any booking, and the appropriate team can help with a cancellation or refund request."
-            )
+            return self._cancellation_policy_explanation()
         if "walk in" in lowered:
             return "Walk-ins are allowed only if slots are available. Slots cannot be held without advance payment."
         if "advance booking" in lowered or "booking required" in lowered:
@@ -1722,7 +1780,7 @@ class InboundAgent:
             "food": "Food options include continental food, build-your-menu options, mix snack boxes, hi-tea options, and Indian buffet options for corporate events.",
             "parking": "Koramangala has basement and street parking, Whitefield has basement car parking with dedicated spots and general parking, and JP Nagar has street parking.",
             "duration": "Each game runs for around 50 minutes, and players should arrive 20 minutes before the slot time.",
-            "cancellation": "Cancellation charges depend on how far in advance the cancellation is made, and the appropriate team handles cancellation or refund requests.",
+            "cancellation": self._cancellation_policy_explanation(),
         }
         ordered_topics = list(dict.fromkeys(topics))
         return "Sure. " + " ".join(answers[topic] for topic in ordered_topics)
@@ -1923,10 +1981,13 @@ class InboundAgent:
             return "Nice. I'd probably go with Murder Mystery for the story and teamwork. Hostage is the more urgent option. Are you looking for something relaxed or more challenging?"
  
         if intent == "escape_room_inquiry":
+            participants = self.memory.data.get("participants")
+            if participants and not self.memory.data.get("experience_level") and not self.memory.data.get("age_group"):
+                return f"Perfect, {participants} players is a great group size. You'll have a lot of fun. Is this everyone's first escape room, or do you have experienced players?"
+
             has_beginner_kw = any(term in lowered for term in ("first time", "never done", "beginner"))
             is_beginner = (self.memory.data.get("experience_level") == "beginner" or has_beginner_kw)
             if is_beginner and not self.memory.data.get("room") and not any(r in self.memory.data.get("discussed_options", []) for r in ["Murder Mystery", "Hostage"]):
-                participants = self.memory.data.get("participants")
                 location = self.memory.data.get("location")
                 age_group = self.memory.data.get("age_group")
                 if participants and location and age_group:
@@ -1935,8 +1996,8 @@ class InboundAgent:
                     # Age group known, location missing — recommend first, then ask location
                     return self._recommendation_response(intent, "Murder Mystery or Hostage", "Murder Mystery is easier to start with, while Hostage adds a bit more urgency.", lowered)
                 if participants:
-                    # Participants known, age_group missing — ask age_group before recommending
-                    return f"Awesome. {participants} people is a great group size. Are the players mostly adults, kids, or a mix?"
+                    # Participants known, age_group missing — ask age_group
+                    return f"Perfect. And is the group mostly adults, kids, or a mix? That'll help me recommend the best experience for your group."
                 return "No worries. I'd probably start with Murder Mystery; Hostage is the faster-paced option. How many people are joining?"
             if recommendation.option:
                 is_asking_rec = any(kw in lowered for kw in ("recommend", "suggest", "popular", "most popular", "what games", "what rooms", "which room"))
@@ -2348,6 +2409,22 @@ class InboundAgent:
         cleaned = re.sub(r"(?im)^\s*(analysis|reasoning)\s*:.*$", "", cleaned).strip()
         for phrase in banned:
             cleaned = cleaned.replace(phrase, "I understand")
+        cleaned = re.sub(
+            r"(?i)^\s*(great|awesome|perfect)!\s+i can help you with (?:your|that)?\s*booking\.?\s*",
+            "Sure. ",
+            cleaned,
+        )
+        cleaned = re.sub(
+            r"(?i)\bi can help you with (?:your|that)?\s*booking\.?\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(r"(?i)\bcould you please tell me\b", "could you tell me", cleaned)
+        if re.fullmatch(
+            r"(?i)sure\.\s*could you tell me which escape room or experience you'?re interested in\??",
+            cleaned.strip(),
+        ):
+            cleaned = "Awesome! We'd love to host you. Is this for an escape room with friends, or are you planning something special like a birthday or team event?"
         if cleaned.startswith("{") and cleaned.endswith("}"):
             try:
                 parsed = json.loads(cleaned)
@@ -2733,11 +2810,7 @@ class InboundAgent:
 
     @staticmethod
     def _cancellation_policy_explanation() -> str:
-        return (
-            "Sure. Cancellations made 3 days or more in advance have no cancellation fee. "
-            "The fee is 25% with less than 3 days' notice, 50% with less than 2 days, and 75% with less than 1 day. "
-            "Cancellations less than 2 hours before the slot, and no-shows, are not refundable."
-        )
+        return CANCELLATION_POLICY_RESPONSE
 
     def _contextual_best_response(self, message: str = "") -> str:
         topic = self.memory.data.get("last_discussed_topic", "")

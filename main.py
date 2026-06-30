@@ -11,6 +11,8 @@ from src.core.agent_response import AgentResponse
 from src.agents.booking_agent import BookingAgent
 from src.agents.escalation_agent import EscalationAgent
 from src.agents.handoff_summary_agent import HandoffSummaryAgent
+from src.agents.learning_agent import LearningAgent
+from src.agents.scoring_agent import ScoringAgent
 from src.memory.conversation_memory import ConversationMemory
 from src.agents.inbound_agent import InboundAgent
 from src.agents.sentiment_agent import SentimentAgent, SentimentResult
@@ -169,6 +171,7 @@ def _enrich_conversation_result(
     result.sentiment_analysis = sentiment.to_dict()
     result.debug = dict(result.debug or {})
     result.debug["sentiment_analysis"] = result.sentiment_analysis
+    
     try:
         # Inbound extraction has a legacy one-turn classifier. Restore the richer
         # observer result without touching any booking or qualification field.
@@ -176,32 +179,88 @@ def _enrich_conversation_result(
         inbound.memory.data["sentiment_confidence"] = sentiment.confidence
         inbound.memory.data["sentiment_reason"] = sentiment.reason
 
-        escalation = EscalationAgent(inbound.memory).evaluate(message, sentiment, result)
-        result.escalation = escalation.to_dict()
-        result.debug["escalation"] = result.escalation
-        if escalation.escalate:
+        escalation = None
+        try:
+            escalation = EscalationAgent(inbound.memory).evaluate(message, sentiment, result)
+            result.escalation = escalation.to_dict()
+            result.debug["escalation"] = result.escalation
+        except Exception as e:
+            logger.exception("Error evaluating escalation: %s", e)
+            result.escalation = {"escalate": False, "reason": "", "summary": ""}
+            result.debug["escalation"] = result.escalation
+
+        if escalation and escalation.escalate:
             try:
                 result.handoff_summary = HandoffSummaryAgent().generate(
                     inbound.memory.data,
                     escalation.to_dict(),
                 )
-            except Exception:
+            except Exception as e:
+                logger.exception("Error generating handoff summary: %s", e)
                 result.handoff_summary = {
                     "escalation_reason": escalation.reason,
                     "summary": escalation.summary or "Escalation requested; detailed summary unavailable.",
                 }
             result.next_agent = "escalation_agent"
             result.should_handoff = True
-            if "safety concern" in escalation.reason.lower():
-                result.response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent."
-            elif "refund" in escalation.reason.lower():
-                result.response = "I'll connect you with our team to review the refund request and the booking details."
-            elif "human representative" in escalation.reason.lower():
-                result.response = "Of course. I'll connect you with our team and pass along the details already shared."
-        result.state = inbound.memory.as_state()
+            try:
+                reason_lower = str(escalation.reason).lower()
+                if "safety concern" in reason_lower:
+                    result.response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent."
+                elif "refund" in reason_lower:
+                    result.response = "I'll connect you with our team to review the refund request and the booking details."
+                elif "human representative" in reason_lower:
+                    result.response = "Of course. I'll connect you with our team and pass along the details already shared."
+                elif "payment issue" in reason_lower:
+                    result.response = "I'm sorry about the payment issue. I've saved the booking and payment context and escalated it to human support for verification."
+                elif "authentication" in reason_lower:
+                    result.response = "I can't continue with sensitive booking changes after repeated verification failures. I've escalated this for manual verification."
+                elif "could not answer" in reason_lower:
+                    result.response = "I'm sorry, I don't have a reliable answer for that. I've saved your question and escalated it to our team."
+                elif "booking or integration failure" in reason_lower or "multiple agent or integration failures" in reason_lower:
+                    result.response = "I'm sorry, the booking system isn't completing this request. I've created a support escalation with the details already provided."
+                elif "frustration" in reason_lower or "anger" in reason_lower:
+                    result.response = "I am so sorry to hear you had a bad experience. Let me connect you with our team right away so we can look into this and make things right."
+            except Exception as e:
+                logger.exception("Error setting escalation response: %s", e)
+            try:
+                conversation = inbound.memory.data.get("conversation", [])
+                if conversation and conversation[-1].get("role") == "agent":
+                    conversation[-1]["content"] = result.response
+                else:
+                    conversation.append({"role": "agent", "content": result.response})
+                inbound.memory.data["conversation"] = conversation
+                result.handoff_summary = HandoffSummaryAgent().generate(
+                    inbound.memory.data,
+                    escalation.to_dict(),
+                )
+                requests = inbound.memory.data.get("escalation_requests", [])
+                if requests and requests[-1].get("support_ticket_id") == escalation.support_ticket_id:
+                    requests[-1]["handoff"] = result.handoff_summary
+                    inbound.memory.data["escalation_requests"] = requests
+                inbound.memory.save()
+            except Exception as e:
+                logger.exception("Error synchronizing escalation transcript: %s", e)
+        try:
+            result.state = inbound.memory.as_state()
+        except Exception as e:
+            logger.exception("Error converting memory to state: %s", e)
+            result.state = {}
+    except Exception as e:
+        logger.exception("Unexpected error in conversation enrichment: %s", e)
+
+    try:
+        scoring = ScoringAgent(inbound.memory).score(message, result, sentiment)
+        learning = LearningAgent(inbound.memory).observe_turn(message, result, sentiment, scoring)
+        result.scoring = scoring.to_dict()
+        result.learning_metrics = learning.metrics
+        result.metrics_report = learning.report
+        result.debug["scoring"] = result.scoring
+        result.debug["learning_metrics"] = result.learning_metrics
     except Exception:
-        result.escalation = {"escalate": False, "reason": "", "summary": ""}
-        result.debug["escalation"] = result.escalation
+        result.scoring = {}
+        result.learning_metrics = {}
+        result.metrics_report = {}
     return result
 
 

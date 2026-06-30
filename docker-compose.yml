@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: breakout_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: breakout_user
+      POSTGRES_PASSWORD: breakout_secure_pass123
+      POSTGRES_DB: breakout_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: breakout_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    container_name: breakout_celery_worker
+    command: celery -A backend.app.worker.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://breakout_user:breakout_secure_pass123@db:5432/breakout_db
+      - REDIS_URL=redis://redis:6379/0
+      - WHATSAPP_ACCESS_TOKEN=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1bmlxdWVfbmFtZSI6ImJpbmRpeWE5Mmtha2RpeWFAZ21haWwuY29tIiwibmFtZWlkIjoiYmluZGl5YTkya2FrZGl5YUBnbWFpbC5jb20iLCJlbWFpbCI6ImJpbmRpeWE5Mmtha2RpeWFAZ21haWwuY29tIiwiYXV0aF90aW1lIjoiMDYvMjYvMjAyNiAxNToyMTowNSIsInRlbmFudF9pZCI6IjEwNzA4NDciLCJkYl9uYW1lIjoibXQtcHJvZC1UZW5hbnRzIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjpbIkFETUlOSVNUUkFUT1IiLCJQQUlEIl0sImV4cCI6MjUzNDAyMzAwODAwLCJpc3MiOiJDbGFyZV9BSSIsImF1ZCI6IkNsYXJlX0FJIn0.kpjQbaFC33q0uF3KGKmq-991DCr_tv1Ok0LVmWShCZI
+      - WHATSAPP_API_ENDPOINT=https://live-mt-server.wati.io/1070847
+    depends_on:
+      - db
+      - redis
+
+  flower:
+    image: mher/flower:0.9.7
+    container_name: breakout_flower
+    command: flower --port=5555 --broker=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+volumes:
+  pgdata:

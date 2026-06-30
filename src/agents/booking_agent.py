@@ -18,8 +18,10 @@ from typing import Any, Dict, List, Optional
 from ..core.agent_response import AgentResponse
 from ..orchestration.booking_orchestrator import BookingOrchestrator
 from ..core.conversation_modes import ConversationMode, ConversationModeDetector
+from ..integrations.whatsapp import WhatsAppClient
 from ..memory.conversation_memory import ConversationMemory
 from ..response_composer import ResponseComposer
+from ..knowledge.policy_answers import CANCELLATION_POLICY_RESPONSE, is_cancellation_policy_question
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,7 @@ class BookingAgent:
         self.response_composer = ResponseComposer(
             Path(__file__).resolve().parents[2] / "prompts" / "breakout_personality_prompt.txt"
         )
+        self.whatsapp_client = WhatsAppClient()
 
         # Internal state machine
         self._state: str = self._STATE_CHECKING_AVAILABILITY
@@ -260,21 +263,14 @@ class BookingAgent:
             self.memory.set_field("phone", target_phone, message, expected_field="phone")
             logger.info("PHONE_PERSISTED=true")
 
-        is_cancellation_policy_question = any(
-            phrase in lowered
-            for phrase in (
-                "cancellation policy", "cancel policy", "cancellation charges",
-                "cancellation rules", "refund policy", "what if i cancel",
-                "how does cancellation", "can bookings be cancelled",
-            )
-        )
+        asks_cancellation_policy = is_cancellation_policy_question(message)
         is_cancel_request = bool(
             re.search(
                 r"\b(?:cancel|delete)\s+(?:my\s+|the\s+|this\s+)?(?:booking|reservation|appointment|slot)\b",
                 lowered,
             )
             or re.search(r"\bi\s+(?:want|need|would like)\s+to\s+cancel\b", lowered)
-        ) and not is_cancellation_policy_question
+        ) and not asks_cancellation_policy
 
         is_affirmative_follow_up = lowered.strip(" .!?") in {
             "yes", "yes please", "sure", "okay", "ok", "please do",
@@ -307,7 +303,7 @@ class BookingAgent:
         )
         is_price_question = bool(
             re.search(r"\b(?:price|pricing|cost|costs|rate|rates|how much)\b", lowered)
-        )
+        ) and not asks_cancellation_policy
         is_discount_question = bool(
             re.search(r"\b(?:discount|offers?|coupon|promo|deal|membership)\b", lowered)
         )
@@ -356,13 +352,10 @@ class BookingAgent:
             response = self._append_booking_resume(self._contextual_best_response())
             booking_result = None
 
-        elif is_cancellation_policy_question:
-            self.memory.data["pending_policy_explanation"] = True
+        elif asks_cancellation_policy:
+            self.memory.data["pending_policy_explanation"] = False
             self.memory.save()
-            response = self._append_booking_resume(
-                "Cancellation charges depend on how far in advance the cancellation is made. "
-                "I can explain the policy without changing your booking."
-            )
+            response = self._append_booking_resume(self._cancellation_policy_explanation())
             booking_result = None
 
         elif is_cancel_request:
@@ -696,10 +689,14 @@ class BookingAgent:
 
         if not self.memory.data.get("age_group"):
             self._state = self._STATE_WAITING_FOR_AGE
-            return "Perfect, I've found that slot. Before I lock it in, are the players adults, kids, or a mix?", None
+            date = str(self.memory.data.get("preferred_date", "")).strip()
+            participants = self.memory.data.get("participants") or self.memory.data.get("company_size") or 10
+            return f"Got it — {date} at around {matched} for {participants} players. One quick question: is the group mostly adults, kids, or a mix? That'll help me recommend the best experience for your group.", None
         if not self.memory.data.get("first_name"):
             self._state = self._STATE_WAITING_FOR_FIRST_NAME
-            return f"Perfect. I've found an available slot at {matched}. Before I lock that in, may I get your first name?", None
+            date = str(self.memory.data.get("preferred_date", "")).strip()
+            participants = self.memory.data.get("participants") or self.memory.data.get("company_size") or 10
+            return f"Got it — I've found an available slot at {matched} on {date} for {participants} players. Before I lock that in, may I get your first name?", None
         if not self.memory.data.get("last_name"):
             self._state = self._STATE_WAITING_FOR_LAST_NAME
             return f"Thanks, {self.memory.data['first_name']}. What is your last name?", None
@@ -815,8 +812,16 @@ class BookingAgent:
         self.memory.data["booking_ref"] = booking_reference
         self.memory.data["booking_order_id"] = str(booking_result.get("order_id") or "")
         self.memory.save()
+        whatsapp_result = self.whatsapp_client.send_booking_confirmation(
+            str(self.memory.data.get("phone", "")),
+            {**booking_result, "slot": matched},
+        )
+        booking_result["whatsapp_confirmation"] = whatsapp_result.to_dict()
+        self.memory.data["whatsapp_confirmation"] = whatsapp_result.to_dict()
+        self.memory.save()
         logger.info("BOOKING_ID=%s", booking_id)
         logger.info("BOOKING_REF=%s", self.memory.data["booking_ref"])
+        logger.info("WHATSAPP_CONFIRMATION=%s", whatsapp_result.to_dict())
         self._state = self._STATE_BOOKING_CONFIRMED
 
         location = booking_result["location"]
@@ -1070,11 +1075,7 @@ class BookingAgent:
 
     @staticmethod
     def _cancellation_policy_explanation() -> str:
-        return (
-            "Sure. Cancellations made 3 days or more in advance have no cancellation fee. "
-            "The fee is 25% with less than 3 days' notice, 50% with less than 2 days, and 75% with less than 1 day. "
-            "Cancellations less than 2 hours before the slot, and no-shows, are not refundable."
-        )
+        return CANCELLATION_POLICY_RESPONSE
 
     def _contextual_best_response(self) -> str:
         topic = self.memory.data.get("last_discussed_topic", "")

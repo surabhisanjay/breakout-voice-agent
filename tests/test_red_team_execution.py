@@ -297,7 +297,7 @@ class TestD_FAQ:
         agent._available_slots = ["3:00 PM"]
         for i in range(5):
             r = agent.handle_message("What is the cancellation policy?")
-            assert "Cancellation charges" in r.response or "i can explain" in r.response.lower(), (
+            assert "full refund" in r.response and "not refundable" in r.response.lower(), (
                 f"FAIL D011: Cancellation policy not answered on iteration {i+1}"
             )
 
@@ -338,10 +338,7 @@ class TestE_Escalations:
         sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
         agent = EscalationAgent(mem)
         result = agent.evaluate("I deserve a refund", sentiment)
-        # DOCUMENTED BUG: "deserve" is not in REFUND_REQUEST pattern
-        # Escalation should fire but may not
-        if not result.escalate:
-            pass  # DOCUMENTED GAP E003: "I deserve a refund" misses escalation
+        assert result.escalate is True
 
     # E010 — "my friend fainted" not escalated as safety issue
     def test_E010_friend_fainted_not_safety_escalation(self, tmp_path):
@@ -353,9 +350,7 @@ class TestE_Escalations:
         sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
         agent = EscalationAgent(mem)
         result = agent.evaluate("my friend fainted inside the room", sentiment)
-        # DOCUMENTED CRITICAL BUG: Safety escalation not triggered for "fainted"
-        if not result.escalate:
-            pass  # CRITICAL GAP E010: Medical emergency not detected
+        assert result.escalate is True
 
     # E013 — "get me a human" not escalated
     def test_E013_get_me_a_human_not_escalated(self, tmp_path):
@@ -367,8 +362,7 @@ class TestE_Escalations:
         sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
         agent = EscalationAgent(mem)
         result = agent.evaluate("get me a human please", sentiment)
-        if not result.escalate:
-            pass  # DOCUMENTED GAP E013: "get me a human" misses HUMAN_REQUEST
+        assert result.escalate is True
 
     # E014 — "talk to your manager" not escalated
     def test_E014_talk_to_your_manager_not_escalated(self, tmp_path):
@@ -380,8 +374,7 @@ class TestE_Escalations:
         sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
         agent = EscalationAgent(mem)
         result = agent.evaluate("I want to talk to your manager", sentiment)
-        if not result.escalate:
-            pass  # DOCUMENTED GAP E014: "talk to your manager" misses HUMAN_REQUEST
+        assert result.escalate is True
 
     # E004 — Safety escalation dropped on exception in HandoffSummaryAgent
     def test_E004_escalation_not_silently_dropped_on_exception(self, tmp_path):

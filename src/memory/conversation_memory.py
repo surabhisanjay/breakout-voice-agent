@@ -17,6 +17,24 @@ DEFAULT_MEMORY = {
     "last_name": "",
     "phone": "",
     "email": "",
+    "call_id": "",
+    "call_status": "unknown",
+    "call_status_source": "none",
+    "call_started_at": "",
+    "call_ended_at": "",
+    "call_ended_reason": "",
+    "last_call_activity_at": "",
+    "vapi_assistant_id": "",
+    "vapi_phone_number_id": "",
+    "vapi_monitor_listen_url": "",
+    "vapi_monitor_control_url": "",
+    "vapi_provider": "",
+    "vapi_environment": "",
+    "vapi_region": "",
+    "vapi_event_count": 0,
+    "vapi_events": [],
+    "vapi_transcript_events": [],
+    "vapi_errors": [],
     "location": "",
     "participants": "",
     "participants_min": "",
@@ -37,9 +55,24 @@ DEFAULT_MEMORY = {
     "sentiment_confidence": 0.0,
     "sentiment_reason": "",
     "sentiment_history": [],
+    "score_history": [],
+    "learning_metrics": {
+        "turns": 0,
+        "intent_counts": {},
+        "sentiment_counts": {},
+        "handoff_count": 0,
+        "booking_confirmed_count": 0,
+        "whatsapp_sent_count": 0,
+        "last_insights": [],
+    },
     "escalation_state": {"escalate": False, "reason": "", "summary": ""},
     "escalation_history": [],
+    "escalation_requests": [],
+    "support_tickets": [],
+    "unresolved_queries": [],
     "failed_answer_count": 0,
+    "authentication_failure_count": 0,
+    "payment_status": "not_started",
     "recommended_option": "",
     "selected_slot": "",
     # ------------------------------------------------------------------ #
@@ -107,10 +140,14 @@ class ConversationMemory:
             merged["conversation"] = []
         for key in [
             "discussed_options", "customer_preferences", "concerns", "audit_trail",
-            "sentiment_history", "escalation_history",
+            "sentiment_history", "score_history", "escalation_history",
+            "escalation_requests", "support_tickets", "unresolved_queries",
+            "vapi_events", "vapi_transcript_events", "vapi_errors",
         ]:
             if not isinstance(merged.get(key), list):
                 merged[key] = []
+        if not isinstance(merged.get("learning_metrics"), dict):
+            merged["learning_metrics"] = copy.deepcopy(DEFAULT_MEMORY["learning_metrics"])
         if not isinstance(merged.get("escalation_state"), dict):
             merged["escalation_state"] = copy.deepcopy(DEFAULT_MEMORY["escalation_state"])
         return merged

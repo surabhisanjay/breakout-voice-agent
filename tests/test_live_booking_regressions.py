@@ -16,6 +16,7 @@ from src.agents.inbound_agent import InboundAgent  # noqa: E402
 from src.knowledge.knowledge_loader import KnowledgeLoader  # noqa: E402
 from src.orchestration.conversation_manager import ConversationManager  # noqa: E402
 from src.services.recommendation_engine import RecommendationEngine  # noqa: E402
+from main import dispatch  # noqa: E402
 
 
 def make_memory(tmp_path: Path, *, with_date: bool = True) -> ConversationMemory:
@@ -112,7 +113,9 @@ def test_cancellation_policy_never_cancels_booking(tmp_path: Path) -> None:
 
     result = agent.handle_message("What is your cancellation policy?")
 
-    assert "Cancellation charges" in result.response
+    assert "full refund" in result.response
+    assert "75% refund" in result.response
+    assert "not refundable" in result.response
     assert "3:00 PM" in result.response
     assert "cancelled" not in result.response.lower()
     agent.orchestrator.cancel_booking.assert_not_called()
@@ -163,11 +166,48 @@ def test_policy_offer_yes_provides_full_policy_and_resumes_booking(tmp_path: Pat
     offer = agent.handle_message("What is the cancellation policy?")
     explanation = agent.handle_message("Yes please")
 
-    assert "I can explain the policy" in offer.response
-    assert "3 days or more" in explanation.response
-    assert "not refundable" in explanation.response
-    assert "3:00 PM" in explanation.response
+    assert "full refund" in offer.response
+    assert "not refundable" in offer.response
+    assert "3:00 PM" in offer.response
+    assert explanation.response
     assert agent._state == agent._STATE_WAITING_FOR_SLOT
+
+
+def test_policy_followups_return_exact_refund_breakdown_during_booking(tmp_path: Path) -> None:
+    agent = BookingAgent(make_memory(tmp_path))
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["3:00 PM"]
+
+    for message in (
+        "Please explain the cancellation policy in detail.",
+        "Just tell me the cancellation policy.",
+        "If I cancel my booking, how much refund will I get?",
+        "I want the exact breakdown of your cancellation policy.",
+    ):
+        response = agent.handle_message(message).response
+        assert "full refund" in response
+        assert "75% refund" in response
+        assert "50% refund" in response
+        assert "25% refund" in response
+        assert "not refundable" in response
+
+
+def test_refund_policy_question_is_answered_before_any_booking_handoff(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "fresh-policy-session.json")
+    inbound = make_inbound(tmp_path, memory)
+
+    result, booking, active_agent = dispatch(
+        "If I cancel my booking, how much refund will I get?",
+        inbound,
+        None,
+        "inbound_agent",
+    )
+
+    assert "full refund" in result.response
+    assert "25% refund" in result.response
+    assert result.should_handoff is False
+    assert booking is None
+    assert active_agent == "inbound_agent"
 
 
 def test_booking_completion_uses_concierge_follow_up(tmp_path: Path) -> None:

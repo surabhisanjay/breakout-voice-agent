@@ -1,0 +1,324 @@
+{"kind":"deck","id":"pr/o8tx1g","name":"Deck"}
+{"kind":"layout","layoutId":"b80c5475-8697-46d4-9e60-ca8b114c0614","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"83c3e18f-6175-40ab-9d26-5b18cbbe6060","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/2iv0bg","slide":1,"title":"Closira AI Inbound Agent MVP","textShapes":8}
+{"kind":"textbox","id":"sh/a1gvy90j","slide":1,"text":"Closira AI Inbound Agent MVP","textPreview":"Closira AI Inbound Agent MVP","textChars":28,"textLines":1,"bbox":[54,78,820,78]}
+{"kind":"textbox","id":"sh/hoza1gvy","slide":1,"text":"Team Alignment Meeting","textPreview":"Team Alignment Meeting","textChars":22,"textLines":1,"bbox":[54,164,520,38]}
+{"kind":"textbox","id":"sh/s36hcrmh","slide":1,"text":"Test Environment: Breakout Escape Rooms","textPreview":"Test Environment: Breakout Escape Rooms","textChars":39,"textLines":1,"bbox":[54,224,560,30]}
+{"kind":"shape","id":"sh/za1gvy90","slide":1,"bbox":[54,312,1120,190]}
+{"kind":"textbox","id":"sh/ap4r65wj","slide":1,"text":"Meeting goal","textPreview":"Meeting goal","textChars":12,"textLines":1,"bbox":[88,344,260,34]}
+{"kind":"textbox","id":"sh/hgn29gr2","slide":1,"text":"- Share MVP progress and current implementation\n- Align booking, payment, voice, messaging, and CRM contracts\n- Identify blockers, owners, and next integration milestones","textPreview":"- Share MVP progress and current implementation | - Align booking, payment, voice, messaging, and CRM contracts | - Identify blockers, ow...","textChars":170,"textLines":3,"bbox":[88,392,800,90]}
+{"kind":"shape","id":"sh/svu9knih","slide":1,"bbox":[1010,344,100,28]}
+{"kind":"textbox","id":"sh/3ylc7u54","slide":1,"text":"15 min","textPreview":"15 min","textChars":6,"textLines":1,"bbox":[1022,349,76,18]}
+{"kind":"textbox","id":"sh/adsji5sn","slide":1,"text":"Audience: Full-stack, Backend, AI, Product","textPreview":"Audience: Full-stack, Backend, AI, Product","textChars":42,"textLines":1,"bbox":[54,594,740,28]}
+{"kind":"textbox","id":"sh/w7mp0bi9","slide":1,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/2iv0bg","slide":1,"text":"Open by framing this as an implementation alignment meeting.\nEmphasize that the team has working AI/CRM/Vapi pieces, but production reliability depends on final integration contracts.\nState that the most important outcome is named owners and unblockers, not a general status update."}
+{"kind":"slide","id":"sl/mrak8x","slide":2,"title":"INTRODUCTION","textShapes":12}
+{"kind":"textbox","id":"sh/nqxs72x4","slide":2,"text":"INTRODUCTION","textPreview":"INTRODUCTION","textChars":12,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/cbulwval","slide":2,"text":"Objective, Problem, Scope, Success","textPreview":"Objective, Problem, Scope, Success","textChars":34,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/5sneloj2","slide":2,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/ytsvu9kn","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/neloj2t8","slide":2,"bbox":[54,180,350,330]}
+{"kind":"textbox","id":"sh/czed8v6p","slide":2,"text":"Problem","textPreview":"Problem","textChars":7,"textLines":1,"bbox":[76,204,300,34]}
+{"kind":"textbox","id":"sh/5kb6xkf6","slide":2,"text":"- Missed calls and slow responses lose leads\n- Staff repeat the same FAQs\n- Customer data is scattered","textPreview":"- Missed calls and slow responses lose leads | - Staff repeat the same FAQs | - Customer data is scattered","textChars":102,"textLines":3,"bbox":[76,264,295,180]}
+{"kind":"shape","id":"sh/yhgn29gr","slide":2,"bbox":[446,180,350,330]}
+{"kind":"textbox","id":"sh/n29gr2p8","slide":2,"text":"MVP scope","textPreview":"MVP scope","textChars":9,"textLines":1,"bbox":[468,204,300,34]}
+{"kind":"textbox","id":"sh/fyxobm58","slide":2,"text":"- Inbound calls and FAQs\n- Lead qualification and summaries\n- Booking, payment-link, CRM, messaging hooks","textPreview":"- Inbound calls and FAQs | - Lead qualification and summaries | - Booking, payment-link, CRM, messaging hooks","textChars":105,"textLines":3,"bbox":[468,264,295,180]}
+{"kind":"shape","id":"sh/qd4vmtwr","slide":2,"bbox":[838,180,350,330]}
+{"kind":"textbox","id":"sh/x4nap4r6","slide":2,"text":"Success criteria","textPreview":"Success criteria","textChars":16,"textLines":1,"bbox":[860,204,300,34]}
+{"kind":"textbox","id":"sh/8jqh0fep","slide":2,"text":"- Answer every routed call\n- Keep context through messy conversations\n- Escalate with useful summaries","textPreview":"- Answer every routed call | - Keep context through messy conversations | - Escalate with useful summaries","textChars":102,"textLines":3,"bbox":[860,264,295,180]}
+{"kind":"shape","id":"sh/fa9w3m94","slide":2,"bbox":[54,548,1120,76]}
+{"kind":"textbox","id":"sh/qpg3ex0n","slide":2,"text":"Business rule","textPreview":"Business rule","textChars":13,"textLines":1,"bbox":[82,568,150,26]}
+{"kind":"textbox","id":"sh/xczed8v6","slide":2,"text":"A selected slot is not a confirmed booking. Payment success is the confirmation trigger.","textPreview":"A selected slot is not a confirmed booking. Payment success is the confirmation trigger.","textChars":88,"textLines":1,"bbox":[240,568,840,28]}
+{"kind":"textbox","id":"sh/8v6psfil","slide":2,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/mrak8x","slide":2,"text":"Connect the PRD objectives to implementation: instant answering, qualification, follow-ups, and human handoff.\nCall out the booking rule early because it affects backend state, payment webhooks, CRM labels, and agent language.\nThe MVP is a test environment for Breakout, but the architecture should generalize to Closira SMB deployments."}
+{"kind":"slide","id":"sl/l93war","slide":3,"title":"PROGRESS OVERVIEW","textShapes":20}
+{"kind":"textbox","id":"sh/4r65wjud","slide":3,"text":"PROGRESS OVERVIEW","textPreview":"PROGRESS OVERVIEW","textChars":17,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/f6dcbulw","slide":3,"text":"What Is Done vs. What Is Still Moving","textPreview":"What Is Done vs. What Is Still Moving","textChars":37,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/mlkjm1cf","slide":3,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/xkf6dcbu","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"textbox","id":"sh/4zidonyd","slide":3,"text":"Completed","textPreview":"Completed","textChars":9,"textLines":1,"bbox":[70,168,250,34]}
+{"kind":"textbox","id":"sh/fepkzupw","slide":3,"text":"In progress","textPreview":"In progress","textChars":11,"textLines":1,"bbox":[710,168,260,34]}
+{"kind":"shape","id":"sh/mtwra5gb","slide":3,"bbox":[74,222,10,10]}
+{"kind":"textbox","id":"sh/xobm58z2","slide":3,"text":"FastAPI backend","textPreview":"FastAPI backend","textChars":15,"textLines":1,"bbox":[92,214,460,30]}
+{"kind":"shape","id":"sh/83itgfml","slide":3,"bbox":[74,264,10,10]}
+{"kind":"textbox","id":"sh/y90je9cv","slide":3,"text":"Intent detection","textPreview":"Intent detection","textChars":16,"textLines":1,"bbox":[92,256,460,30]}
+{"kind":"shape","id":"sh/nuxc3ylc","slide":3,"bbox":[74,306,10,10]}
+{"kind":"textbox","id":"sh/gbq1oryt","slide":3,"text":"Conversation memory","textPreview":"Conversation memory","textChars":19,"textLines":1,"bbox":[92,298,460,30]}
+{"kind":"shape","id":"sh/5wjudg7a","slide":3,"bbox":[74,348,10,10]}
+{"kind":"textbox","id":"sh/yhgn29gr","slide":3,"text":"FAQ retrieval","textPreview":"FAQ retrieval","textChars":13,"textLines":1,"bbox":[92,340,460,30]}
+{"kind":"shape","id":"sh/n29gr2p8","slide":3,"bbox":[74,390,10,10]}
+{"kind":"textbox","id":"sh/gn29gr2p","slide":3,"text":"Vapi tool integration","textPreview":"Vapi tool integration","textChars":21,"textLines":1,"bbox":[92,382,460,30]}
+{"kind":"shape","id":"sh/58z25kb6","slide":3,"bbox":[74,432,10,10]}
+{"kind":"textbox","id":"sh/ytsvu9kn","slide":3,"text":"CRM dashboard","textPreview":"CRM dashboard","textChars":13,"textLines":1,"bbox":[92,424,460,30]}
+{"kind":"shape","id":"sh/neloj2t8","slide":3,"bbox":[74,474,10,10]}
+{"kind":"textbox","id":"sh/fepkzupw","slide":3,"text":"Booking API client","textPreview":"Booking API client","textChars":18,"textLines":1,"bbox":[92,466,460,30]}
+{"kind":"shape","id":"sh/mtwra5gb","slide":3,"bbox":[74,516,10,10]}
+{"kind":"textbox","id":"sh/xkf6dcbu","slide":3,"text":"WhatsApp client scaffolding","textPreview":"WhatsApp client scaffolding","textChars":27,"textLines":1,"bbox":[92,508,460,30]}
+{"kind":"shape","id":"sh/4zidonyd","slide":3,"bbox":[714,222,10,10]}
+{"kind":"textbox","id":"sh/f6dcbulw","slide":3,"text":"Payment state machine","textPreview":"Payment state machine","textChars":21,"textLines":1,"bbox":[732,214,440,30]}
+{"kind":"shape","id":"sh/mlkjm1cf","slide":3,"bbox":[714,270,10,10]}
+{"kind":"textbox","id":"sh/xc3ylc7u","slide":3,"text":"Payment callbacks","textPreview":"Payment callbacks","textChars":17,"textLines":1,"bbox":[732,262,440,30]}
+{"kind":"shape","id":"sh/4r65wjud","slide":3,"bbox":[714,318,10,10]}
+{"kind":"textbox","id":"sh/fu18jqh0","slide":3,"text":"TeleCMI integration","textPreview":"TeleCMI integration","textChars":19,"textLines":1,"bbox":[732,310,440,30]}
+{"kind":"shape","id":"sh/m94fu18j","slide":3,"bbox":[714,366,10,10]}
+{"kind":"textbox","id":"sh/0bi9s36h","slide":3,"text":"CRM field mapping","textPreview":"CRM field mapping","textChars":17,"textLines":1,"bbox":[732,358,440,30]}
+{"kind":"shape","id":"sh/pwb2hwfy","slide":3,"bbox":[714,414,10,10]}
+{"kind":"textbox","id":"sh/i5sneloj","slide":3,"text":"Production credentials","textPreview":"Production credentials","textChars":22,"textLines":1,"bbox":[732,406,440,30]}
+{"kind":"shape","id":"sh/7qpg3ex0","slide":3,"bbox":[714,462,10,10]}
+{"kind":"textbox","id":"sh/wjudg7ad","slide":3,"text":"End-to-end staging tests","textPreview":"End-to-end staging tests","textChars":24,"textLines":1,"bbox":[732,454,440,30]}
+{"kind":"shape","id":"sh/p4r65wju","slide":3,"bbox":[612,178,1,405]}
+{"kind":"textbox","id":"sh/ed8v6psf","slide":3,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/l93war","slide":3,"text":"The completed list reflects current implementation, not aspirational scope.\nThe in-progress items are where we need team alignment: payment callbacks, TeleCMI events, CRM schema, and credentials.\nAvoid overclaiming payment: payment scaffolding exists, but the production state machine is not finished."}
+{"kind":"slide","id":"sl/jsy2bi","slide":4,"title":"ARCHITECTURE","textShapes":22}
+{"kind":"textbox","id":"sh/pg3ex0nu","slide":4,"text":"ARCHITECTURE","textPreview":"ARCHITECTURE","textChars":12,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/epkzupwb","slide":4,"text":"Inbound Call And Integration Flow","textPreview":"Inbound Call And Integration Flow","textChars":33,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/7adsji5s","slide":4,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/w7mp0bi9","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/psfil0rq","slide":4,"bbox":[70,174,130,64]}
+{"kind":"textbox","id":"sh/e1w7mp0b","slide":4,"text":"Customer","textPreview":"Customer","textChars":8,"textLines":1,"bbox":[80,194,110,28]}
+{"kind":"shape","id":"sh/7mp0bi9s","slide":4,"bbox":[200,206,30,0]}
+{"kind":"shape","id":"sh/wfyxobm5","slide":4,"bbox":[230,174,130,64]}
+{"kind":"textbox","id":"sh/l0rqd4vm","slide":4,"text":"TeleCMI","textPreview":"TeleCMI","textChars":7,"textLines":1,"bbox":[240,194,110,28]}
+{"kind":"shape","id":"sh/hk3q5o7q","slide":4,"bbox":[360,206,30,0]}
+{"kind":"shape","id":"sh/oza1gvy9","slide":4,"bbox":[390,174,130,64]}
+{"kind":"textbox","id":"sh/zed8v6ps","slide":4,"text":"Vapi","textPreview":"Vapi","textChars":4,"textLines":1,"bbox":[400,194,110,28]}
+{"kind":"shape","id":"sh/6xkf6dcb","slide":4,"bbox":[520,206,30,0]}
+{"kind":"shape","id":"sh/hwfyxobm","slide":4,"bbox":[550,174,130,64]}
+{"kind":"textbox","id":"sh/obm58z25","slide":4,"text":"FastAPI","textPreview":"FastAPI","textChars":7,"textLines":1,"bbox":[560,194,110,28]}
+{"kind":"shape","id":"sh/zqtcj6to","slide":4,"bbox":[680,206,30,0]}
+{"kind":"shape","id":"sh/65wjudg7","slide":4,"bbox":[710,174,130,64]}
+{"kind":"textbox","id":"sh/h0fepkzu","slide":4,"text":"Inbound Agent","textPreview":"Inbound Agent","textChars":13,"textLines":1,"bbox":[720,194,110,28]}
+{"kind":"shape","id":"sh/sfil0rqd","slide":4,"bbox":[840,206,30,0]}
+{"kind":"shape","id":"sh/onyd0z61","slide":4,"bbox":[870,174,130,64]}
+{"kind":"textbox","id":"sh/d8v6psfi","slide":4,"text":"Knowledge + Memory","textPreview":"Knowledge + Memory","textChars":18,"textLines":1,"bbox":[880,194,110,28]}
+{"kind":"textbox","id":"sh/6hcrmhk3","slide":4,"text":"Core agent services","textPreview":"Core agent services","textChars":19,"textLines":1,"bbox":[70,300,260,30]}
+{"kind":"shape","id":"sh/z25kb6xk","slide":4,"bbox":[70,350,150,54]}
+{"kind":"textbox","id":"sh/ovahoza1","slide":4,"text":"Intent","textPreview":"Intent","textChars":6,"textLines":1,"bbox":[80,365,130,28]}
+{"kind":"shape","id":"sh/dg7adsji","slide":4,"bbox":[254,350,150,54]}
+{"kind":"textbox","id":"sh/6tovahoz","slide":4,"text":"Memory","textPreview":"Memory","textChars":6,"textLines":1,"bbox":[264,365,130,28]}
+{"kind":"shape","id":"sh/vahoza1g","slide":4,"bbox":[438,350,150,54]}
+{"kind":"textbox","id":"sh/o7qpg3ex","slide":4,"text":"FAQ/RAG","textPreview":"FAQ/RAG","textChars":7,"textLines":1,"bbox":[448,365,130,28]}
+{"kind":"shape","id":"sh/dsji5sne","slide":4,"bbox":[622,350,150,54]}
+{"kind":"textbox","id":"sh/3q5o7qpg","slide":4,"text":"Sentiment","textPreview":"Sentiment","textChars":9,"textLines":1,"bbox":[632,365,130,28]}
+{"kind":"shape","id":"sh/e9cvixcz","slide":4,"bbox":[806,350,150,54]}
+{"kind":"textbox","id":"sh/lwval87e","slide":4,"text":"Scoring","textPreview":"Scoring","textChars":7,"textLines":1,"bbox":[816,365,130,28]}
+{"kind":"shape","id":"sh/wb2hwfyx","slide":4,"bbox":[990,350,150,54]}
+{"kind":"textbox","id":"sh/3itgfmlk","slide":4,"text":"Escalation","textPreview":"Escalation","textChars":10,"textLines":1,"bbox":[1000,365,130,28]}
+{"kind":"textbox","id":"sh/ex0nuxc3","slide":4,"text":"External systems","textPreview":"External systems","textChars":16,"textLines":1,"bbox":[70,466,260,30]}
+{"kind":"shape","id":"sh/loj2t83i","slide":4,"bbox":[108,520,190,64]}
+{"kind":"textbox","id":"sh/w3m94fu1","slide":4,"text":"Booking API","textPreview":"Booking API","textChars":11,"textLines":1,"bbox":[118,540,170,28]}
+{"kind":"shape","id":"sh/3ex0nuxc","slide":4,"bbox":[368,520,190,64]}
+{"kind":"textbox","id":"sh/at47y1kr","slide":4,"text":"Payment API","textPreview":"Payment API","textChars":11,"textLines":1,"bbox":[378,540,170,28]}
+{"kind":"shape","id":"sh/upwb2hwf","slide":4,"bbox":[628,520,190,64]}
+{"kind":"textbox","id":"sh/nap4r65w","slide":4,"text":"CRM","textPreview":"CRM","textChars":3,"textLines":1,"bbox":[638,540,170,28]}
+{"kind":"shape","id":"sh/cvixczed","slide":4,"bbox":[888,520,190,64]}
+{"kind":"textbox","id":"sh/5gbq1ory","slide":4,"text":"WhatsApp/SMS","textPreview":"WhatsApp/SMS","textChars":12,"textLines":1,"bbox":[898,540,170,28]}
+{"kind":"shape","id":"sh/udg7adsj","slide":4,"bbox":[935,238,0,96]}
+{"kind":"shape","id":"sh/nyd0z610","slide":4,"bbox":[920,406,0,114]}
+{"kind":"textbox","id":"sh/cj6tovah","slide":4,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/jsy2bi","slide":4,"text":"Walk left to right: phone call enters through TeleCMI, Vapi manages the voice interface, FastAPI receives tool calls.\nThe inbound agent owns conversation behavior; external systems own system-of-record facts.\nPayment is intentionally shown as a separate external system because payment success drives booking confirmation."}
+{"kind":"slide","id":"sl/x85edb","slide":5,"title":"DEMO 1","textShapes":14}
+{"kind":"textbox","id":"sh/u54zidon","slide":5,"text":"DEMO 1","textPreview":"DEMO 1","textChars":6,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/5sneloj2","slide":5,"text":"Customer Asks FAQs","textPreview":"Customer Asks FAQs","textChars":18,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/cbulwval","slide":5,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/neloj2t8","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/ytsvu9kn","slide":5,"bbox":[70,170,500,96]}
+{"kind":"textbox","id":"sh/5kb6xkf6","slide":5,"text":"Customer query","textPreview":"Customer query","textChars":14,"textLines":1,"bbox":[96,188,220,24]}
+{"kind":"textbox","id":"sh/czed8v6p","slide":5,"text":"\"Are we actually locked inside the room?\"","textPreview":"\"Are we actually locked inside the room?\"","textChars":41,"textLines":1,"bbox":[96,224,410,30]}
+{"kind":"shape","id":"sh/n29gr2p8","slide":5,"bbox":[650,170,500,86]}
+{"kind":"textbox","id":"sh/yhgn29gr","slide":5,"text":"Reasoning","textPreview":"Reasoning","textChars":9,"textLines":1,"bbox":[672,188,160,24]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":5,"text":"Safety / FAQ intent; retrieve SOP-backed answer","textPreview":"Safety / FAQ intent; retrieve SOP-backed answer","textChars":47,"textLines":1,"bbox":[672,222,430,28]}
+{"kind":"shape","id":"sh/9w3m94fu","slide":5,"bbox":[650,288,500,86]}
+{"kind":"textbox","id":"sh/25kb6xkf","slide":5,"text":"Response","textPreview":"Response","textChars":8,"textLines":1,"bbox":[672,306,160,24]}
+{"kind":"textbox","id":"sh/rqd4vmtw","slide":5,"text":"Reassure: monitored room, assistance available, safe exit policy","textPreview":"Reassure: monitored room, assistance available, safe exit policy","textChars":64,"textLines":1,"bbox":[672,340,430,28]}
+{"kind":"shape","id":"sh/kzupwb2h","slide":5,"bbox":[650,406,500,86]}
+{"kind":"textbox","id":"sh/9knih4by","slide":5,"text":"CRM update","textPreview":"CRM update","textChars":10,"textLines":1,"bbox":[672,424,160,24]}
+{"kind":"textbox","id":"sh/2t83itgf","slide":5,"text":"Store turn, intent, sentiment, summary-ready transcript","textPreview":"Store turn, intent, sentiment, summary-ready transcript","textChars":55,"textLines":1,"bbox":[672,458,430,28]}
+{"kind":"textbox","id":"sh/re1w7mp0","slide":5,"text":"APIs / components","textPreview":"APIs / components","textChars":17,"textLines":1,"bbox":[80,330,260,28]}
+{"kind":"textbox","id":"sh/gvy90je9","slide":5,"text":"- POST /vapi/tool\n- Inbound Agent\n- Knowledge retrieval\n- Learning metrics\n- CRM memory file","textPreview":"- POST /vapi/tool | - Inbound Agent | - Knowledge retrieval | - Learning metrics | - CRM memory file","textChars":92,"textLines":5,"bbox":[80,376,420,150]}
+{"kind":"textbox","id":"sh/9gr2p8nq","slide":5,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/x85edb","slide":5,"text":"Use this demo to show FAQ handling without breaking the booking flow.\nIf the customer was mid-booking, the agent should answer briefly and then return to the pending detail.\nCRM impact: the turn is logged and available for summary and dashboard metrics."}
+{"kind":"slide","id":"sl/or46r1","slide":6,"title":"DEMO 2","textShapes":14}
+{"kind":"textbox","id":"sh/4zidonyd","slide":6,"text":"DEMO 2","textPreview":"DEMO 2","textChars":6,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/fepkzupw","slide":6,"text":"Booking Flow: Slot Selection Is Not Confirmation","textPreview":"Booking Flow: Slot Selection Is Not Confirmation","textChars":48,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/mtwra5gb","slide":6,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/xc3ylc7u","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/4r65wjud","slide":6,"bbox":[64,210,158,72]}
+{"kind":"textbox","id":"sh/f6dcbulw","slide":6,"text":"Slot selected","textPreview":"Slot selected","textChars":13,"textLines":1,"bbox":[74,234,138,28]}
+{"kind":"shape","id":"sh/mlkjm1cf","slide":6,"bbox":[222,246,36,0]}
+{"kind":"shape","id":"sh/x0nuxc3y","slide":6,"bbox":[258,210,158,72]}
+{"kind":"textbox","id":"sh/4fu18jqh","slide":6,"text":"Payment link generated","textPreview":"Payment link generated","textChars":22,"textLines":1,"bbox":[268,234,138,28]}
+{"kind":"shape","id":"sh/6dcbulwv","slide":6,"bbox":[416,246,36,0]}
+{"kind":"shape","id":"sh/vy90je9c","slide":6,"bbox":[452,210,158,72]}
+{"kind":"textbox","id":"sh/oj2t83it","slide":6,"text":"Payment pending","textPreview":"Payment pending","textChars":15,"textLines":1,"bbox":[462,234,138,28]}
+{"kind":"shape","id":"sh/d4vmtwra","slide":6,"bbox":[610,246,36,0]}
+{"kind":"shape","id":"sh/61032lsz","slide":6,"bbox":[646,210,158,72]}
+{"kind":"textbox","id":"sh/vmtwra5g","slide":6,"text":"Payment successful","textPreview":"Payment successful","textChars":18,"textLines":1,"bbox":[656,234,138,28]}
+{"kind":"shape","id":"sh/o7qpg3ex","slide":6,"bbox":[804,246,36,0]}
+{"kind":"shape","id":"sh/dsji5sne","slide":6,"bbox":[840,210,158,72]}
+{"kind":"textbox","id":"sh/6tovahoz","slide":6,"text":"Booking confirmed","textPreview":"Booking confirmed","textChars":17,"textLines":1,"bbox":[850,234,138,28]}
+{"kind":"shape","id":"sh/vahoza1g","slide":6,"bbox":[998,246,36,0]}
+{"kind":"shape","id":"sh/r65wjudg","slide":6,"bbox":[1034,210,158,72]}
+{"kind":"textbox","id":"sh/ylc7u54z","slide":6,"text":"Confirmation sent","textPreview":"Confirmation sent","textChars":17,"textLines":1,"bbox":[1044,234,138,28]}
+{"kind":"shape","id":"sh/9cvixcze","slide":6,"bbox":[70,360,510,190]}
+{"kind":"textbox","id":"sh/gr2p8nqx","slide":6,"text":"Customer path","textPreview":"Customer path","textChars":13,"textLines":1,"bbox":[96,386,220,26]}
+{"kind":"textbox","id":"sh/nih4byhg","slide":6,"text":"- \"I want to make a booking\"\n- \"An escape\"\n- \"Four adults, Koramangala, tomorrow\"","textPreview":"- \"I want to make a booking\" | - \"An escape\" | - \"Four adults, Koramangala, tomorrow\"","textChars":81,"textLines":3,"bbox":[96,432,420,86]}
+{"kind":"shape","id":"sh/yxobm58z","slide":6,"bbox":[650,360,510,190]}
+{"kind":"textbox","id":"sh/5o7qpg3e","slide":6,"text":"Implementation guardrail","textPreview":"Implementation guardrail","textChars":24,"textLines":1,"bbox":[676,386,320,26]}
+{"kind":"textbox","id":"sh/g3ex0nux","slide":6,"text":"The agent can say a slot is selected or held. It must not say confirmed until payment success is verified.","textPreview":"The agent can say a slot is selected or held. It must not say confirmed until payment success is verified.","textChars":106,"textLines":1,"bbox":[676,432,430,80]}
+{"kind":"textbox","id":"sh/rmhk3q5o","slide":6,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/or46r1","slide":6,"text":"This is the key production alignment slide.\nBooking API can create instant cart/hold and later convert to booking. Payment request support is optional in the API contract.\nFor Closira, the safe business interpretation is: confirmed only after payment success callback, then send confirmation."}
+{"kind":"slide","id":"sl/6uitmh","slide":7,"title":"DEMO 3","textShapes":14}
+{"kind":"textbox","id":"sh/xc3ylc7u","slide":7,"text":"DEMO 3","textPreview":"DEMO 3","textChars":6,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/mlkjm1cf","slide":7,"text":"Human Escalation And Summary Handoff","textPreview":"Human Escalation And Summary Handoff","textChars":36,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/f6dcbulw","slide":7,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/4zidonyd","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/xkf6dcbu","slide":7,"bbox":[88,210,210,60]}
+{"kind":"textbox","id":"sh/mtwra5gb","slide":7,"text":"Customer request","textPreview":"Customer request","textChars":16,"textLines":1,"bbox":[98,228,190,28]}
+{"kind":"textbox","id":"sh/fepkzupw","slide":7,"text":"\"I want to speak to a person\"","textPreview":"\"I want to speak to a person\"","textChars":29,"textLines":1,"bbox":[88,292,214,58]}
+{"kind":"shape","id":"sh/83itgfml","slide":7,"bbox":[298,240,74,0]}
+{"kind":"shape","id":"sh/xobm58z2","slide":7,"bbox":[372,210,210,60]}
+{"kind":"textbox","id":"sh/dcbulwva","slide":7,"text":"Escalation trigger","textPreview":"Escalation trigger","textChars":18,"textLines":1,"bbox":[382,228,190,28]}
+{"kind":"textbox","id":"sh/kre1w7mp","slide":7,"text":"Explicit human-agent request","textPreview":"Explicit human-agent request","textChars":28,"textLines":1,"bbox":[372,292,214,58]}
+{"kind":"shape","id":"sh/val87ed8","slide":7,"bbox":[582,240,74,0]}
+{"kind":"shape","id":"sh/6psfil0r","slide":7,"bbox":[656,210,210,60]}
+{"kind":"textbox","id":"sh/donyd0z6","slide":7,"text":"Summary","textPreview":"Summary","textChars":7,"textLines":1,"bbox":[666,228,190,28]}
+{"kind":"textbox","id":"sh/k3q5o7qp","slide":7,"text":"Intent, facts captured, unresolved asks","textPreview":"Intent, facts captured, unresolved asks","textChars":39,"textLines":1,"bbox":[656,292,214,58]}
+{"kind":"shape","id":"sh/vixczed8","slide":7,"bbox":[866,240,74,0]}
+{"kind":"shape","id":"sh/2x4nap4r","slide":7,"bbox":[940,210,210,60]}
+{"kind":"textbox","id":"sh/d0z61032","slide":7,"text":"Handoff","textPreview":"Handoff","textChars":7,"textLines":1,"bbox":[950,228,190,28]}
+{"kind":"textbox","id":"sh/kf6dcbul","slide":7,"text":"Transfer or callback based on availability","textPreview":"Transfer or callback based on availability","textChars":42,"textLines":1,"bbox":[940,292,214,58]}
+{"kind":"shape","id":"sh/0bi9s36h","slide":7,"bbox":[90,430,1040,116]}
+{"kind":"textbox","id":"sh/pwb2hwfy","slide":7,"text":"Expected agent response","textPreview":"Expected agent response","textChars":23,"textLines":1,"bbox":[124,454,280,26]}
+{"kind":"textbox","id":"sh/i5sneloj","slide":7,"text":"\"Of course. I’ll connect you with the team and pass along what you’ve already shared.\"","textPreview":"\"Of course. I’ll connect you with the team and pass along what you’ve already shared.\"","textChars":86,"textLines":1,"bbox":[124,494,850,30]}
+{"kind":"textbox","id":"sh/7qpg3ex0","slide":7,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/6uitmh","slide":7,"text":"Escalation is a designed state, not a failure.\nThe AI should stop collecting fields once the customer asks for a human.\nWe need TeleCMI/Vapi mechanics for live transfer and CRM mechanics for showing the summary to the human agent."}
+{"kind":"slide","id":"sl/pin9k6","slide":8,"title":"INTEGRATION DISCUSSION","textShapes":39}
+{"kind":"textbox","id":"sh/7u54zido","slide":8,"text":"INTEGRATION DISCUSSION","textPreview":"INTEGRATION DISCUSSION","textChars":22,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/wfyxobm5","slide":8,"text":"Status, Dependencies, Open Questions","textPreview":"Status, Dependencies, Open Questions","textChars":36,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/l0rqd4vm","slide":8,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/eloj2t83","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/36hcrmhk","slide":8,"bbox":[54,168,170,44]}
+{"kind":"textbox","id":"sh/wra5gbq1","slide":8,"text":"Integration","textPreview":"Integration","textChars":11,"textLines":1,"bbox":[62,181,154,20]}
+{"kind":"shape","id":"sh/lc7u54zi","slide":8,"bbox":[242,168,220,44]}
+{"kind":"textbox","id":"sh/epkzupwb","slide":8,"text":"Current status","textPreview":"Current status","textChars":14,"textLines":1,"bbox":[250,181,204,20]}
+{"kind":"shape","id":"sh/7adsji5s","slide":8,"bbox":[486,168,250,44]}
+{"kind":"textbox","id":"sh/nqxs72x4","slide":8,"text":"Dependencies","textPreview":"Dependencies","textChars":12,"textLines":1,"bbox":[494,181,234,20]}
+{"kind":"shape","id":"sh/u54zidon","slide":8,"bbox":[760,168,230,44]}
+{"kind":"textbox","id":"sh/5sneloj2","slide":8,"text":"Open questions","textPreview":"Open questions","textChars":14,"textLines":1,"bbox":[768,181,214,20]}
+{"kind":"shape","id":"sh/cbulwval","slide":8,"bbox":[1012,168,210,44]}
+{"kind":"textbox","id":"sh/neloj2t8","slide":8,"text":"Owner to confirm","textPreview":"Owner to confirm","textChars":16,"textLines":1,"bbox":[1020,181,194,20]}
+{"kind":"shape","id":"sh/ytsvu9kn","slide":8,"bbox":[54,212,170,62]}
+{"kind":"textbox","id":"sh/5kb6xkf6","slide":8,"text":"Booking APIs","textPreview":"Booking APIs","textChars":12,"textLines":1,"bbox":[62,224,154,34]}
+{"kind":"shape","id":"sh/czed8v6p","slide":8,"bbox":[242,212,220,62]}
+{"kind":"textbox","id":"sh/n29gr2p8","slide":8,"text":"Client aligned","textPreview":"Client aligned","textChars":14,"textLines":1,"bbox":[250,224,204,34]}
+{"kind":"shape","id":"sh/yhgn29gr","slide":8,"bbox":[486,212,250,62]}
+{"kind":"textbox","id":"sh/6hcrmhk3","slide":8,"text":"API key, final contract","textPreview":"API key, final contract","textChars":23,"textLines":1,"bbox":[494,224,234,34]}
+{"kind":"shape","id":"sh/z25kb6xk","slide":8,"bbox":[760,212,230,62]}
+{"kind":"textbox","id":"sh/onyd0z61","slide":8,"text":"Tools vs REST?","textPreview":"Tools vs REST?","textChars":14,"textLines":1,"bbox":[768,224,214,34]}
+{"kind":"shape","id":"sh/d8v6psfi","slide":8,"bbox":[1012,212,210,62]}
+{"kind":"textbox","id":"sh/6tovahoz","slide":8,"text":"Backend","textPreview":"Backend","textChars":7,"textLines":1,"bbox":[1020,224,194,34]}
+{"kind":"shape","id":"sh/vahoza1g","slide":8,"bbox":[54,274,170,62]}
+{"kind":"textbox","id":"sh/ovahoza1","slide":8,"text":"Payment APIs","textPreview":"Payment APIs","textChars":12,"textLines":1,"bbox":[62,286,154,34]}
+{"kind":"shape","id":"sh/dg7adsji","slide":8,"bbox":[242,274,220,62]}
+{"kind":"textbox","id":"sh/61032lsz","slide":8,"text":"State design","textPreview":"State design","textChars":12,"textLines":1,"bbox":[250,286,204,34]}
+{"kind":"shape","id":"sh/vmtwra5g","slide":8,"bbox":[486,274,250,62]}
+{"kind":"textbox","id":"sh/loj2t83i","slide":8,"text":"Webhook schema","textPreview":"Webhook schema","textChars":14,"textLines":1,"bbox":[494,286,234,34]}
+{"kind":"shape","id":"sh/w3m94fu1","slide":8,"bbox":[760,274,230,62]}
+{"kind":"textbox","id":"sh/3itgfmlk","slide":8,"text":"Success source?","textPreview":"Success source?","textChars":15,"textLines":1,"bbox":[768,286,214,34]}
+{"kind":"shape","id":"sh/ex0nuxc3","slide":8,"bbox":[1012,274,210,62]}
+{"kind":"textbox","id":"sh/lwval87e","slide":8,"text":"Payments","textPreview":"Payments","textChars":8,"textLines":1,"bbox":[1020,286,194,34]}
+{"kind":"shape","id":"sh/wb2hwfyx","slide":8,"bbox":[54,336,170,62]}
+{"kind":"textbox","id":"sh/3q5o7qpg","slide":8,"text":"TeleCMI","textPreview":"TeleCMI","textChars":7,"textLines":1,"bbox":[62,348,154,34]}
+{"kind":"shape","id":"sh/e9cvixcz","slide":8,"bbox":[242,336,220,62]}
+{"kind":"textbox","id":"sh/l87ed8ba","slide":8,"text":"Not wired","textPreview":"Not wired","textChars":9,"textLines":1,"bbox":[250,348,204,34]}
+{"kind":"shape","id":"sh/sneloj2t","slide":8,"bbox":[486,336,250,62]}
+{"kind":"textbox","id":"sh/0rqd4vmt","slide":8,"text":"Event specs","textPreview":"Event specs","textChars":11,"textLines":1,"bbox":[494,348,234,34]}
+{"kind":"shape","id":"sh/tcj6tova","slide":8,"bbox":[760,336,230,62]}
+{"kind":"textbox","id":"sh/il0rqd4v","slide":8,"text":"Call routing?","textPreview":"Call routing?","textChars":13,"textLines":1,"bbox":[768,348,214,34]}
+{"kind":"shape","id":"sh/b6xkf6dc","slide":8,"bbox":[1012,336,210,62]}
+{"kind":"textbox","id":"sh/0je9cvix","slide":8,"text":"Telephony","textPreview":"Telephony","textChars":9,"textLines":1,"bbox":[1020,348,194,34]}
+{"kind":"shape","id":"sh/t47y1kre","slide":8,"bbox":[54,398,170,62]}
+{"kind":"textbox","id":"sh/idonyd0z","slide":8,"text":"Vapi","textPreview":"Vapi","textChars":4,"textLines":1,"bbox":[62,410,154,34]}
+{"kind":"shape","id":"sh/byhgn29g","slide":8,"bbox":[242,398,220,62]}
+{"kind":"textbox","id":"sh/0fepkzup","slide":8,"text":"Tool live","textPreview":"Tool live","textChars":9,"textLines":1,"bbox":[250,410,204,34]}
+{"kind":"shape","id":"sh/p0bi9s36","slide":8,"bbox":[486,398,250,62]}
+{"kind":"textbox","id":"sh/zed8v6ps","slide":8,"text":"Payload stability","textPreview":"Payload stability","textChars":17,"textLines":1,"bbox":[494,410,234,34]}
+{"kind":"shape","id":"sh/6xkf6dcb","slide":8,"bbox":[760,398,230,62]}
+{"kind":"textbox","id":"sh/hk3q5o7q","slide":8,"text":"Call events?","textPreview":"Call events?","textChars":12,"textLines":1,"bbox":[768,410,214,34]}
+{"kind":"shape","id":"sh/oza1gvy9","slide":8,"bbox":[1012,398,210,62]}
+{"kind":"textbox","id":"sh/zqtcj6to","slide":8,"text":"AI/Voice","textPreview":"AI/Voice","textChars":8,"textLines":1,"bbox":[1020,410,194,34]}
+{"kind":"shape","id":"sh/65wjudg7","slide":8,"bbox":[54,460,170,62]}
+{"kind":"textbox","id":"sh/hwfyxobm","slide":8,"text":"WhatsApp/SMS","textPreview":"WhatsApp/SMS","textChars":12,"textLines":1,"bbox":[62,472,154,34]}
+{"kind":"shape","id":"sh/obm58z25","slide":8,"bbox":[242,460,220,62]}
+{"kind":"textbox","id":"sh/zupwb2hw","slide":8,"text":"Client scaffold","textPreview":"Client scaffold","textChars":15,"textLines":1,"bbox":[250,472,204,34]}
+{"kind":"shape","id":"sh/a9w3m94f","slide":8,"bbox":[486,460,250,62]}
+{"kind":"textbox","id":"sh/eloj2t83","slide":8,"text":"Provider, templates","textPreview":"Provider, templates","textChars":19,"textLines":1,"bbox":[494,472,234,34]}
+{"kind":"shape","id":"sh/36hcrmhk","slide":8,"bbox":[760,460,230,62]}
+{"kind":"textbox","id":"sh/wra5gbq1","slide":8,"text":"Which provider?","textPreview":"Which provider?","textChars":15,"textLines":1,"bbox":[768,472,214,34]}
+{"kind":"shape","id":"sh/lc7u54zi","slide":8,"bbox":[1012,460,210,62]}
+{"kind":"textbox","id":"sh/ed8bat47","slide":8,"text":"Messaging","textPreview":"Messaging","textChars":9,"textLines":1,"bbox":[1020,472,194,34]}
+{"kind":"shape","id":"sh/7u54zido","slide":8,"bbox":[54,522,170,62]}
+{"kind":"textbox","id":"sh/wfyxobm5","slide":8,"text":"CRM","textPreview":"CRM","textChars":3,"textLines":1,"bbox":[62,534,154,34]}
+{"kind":"shape","id":"sh/l0rqd4vm","slide":8,"bbox":[242,522,220,62]}
+{"kind":"textbox","id":"sh/e1w7mp0b","slide":8,"text":"Dashboard live","textPreview":"Dashboard live","textChars":14,"textLines":1,"bbox":[250,534,204,34]}
+{"kind":"shape","id":"sh/7mp0bi9s","slide":8,"bbox":[486,522,250,62]}
+{"kind":"textbox","id":"sh/tsvu9kni","slide":8,"text":"Field mapping","textPreview":"Field mapping","textChars":13,"textLines":1,"bbox":[494,534,234,34]}
+{"kind":"shape","id":"sh/47y1kre1","slide":8,"bbox":[760,522,230,62]}
+{"kind":"textbox","id":"sh/bm58z25k","slide":8,"text":"System of record?","textPreview":"System of record?","textChars":17,"textLines":1,"bbox":[768,534,214,34]}
+{"kind":"shape","id":"sh/m1cfa9w3","slide":8,"bbox":[1012,522,210,62]}
+{"kind":"textbox","id":"sh/tgfmlkjm","slide":8,"text":"CRM/FS","textPreview":"CRM/FS","textChars":6,"textLines":1,"bbox":[1020,534,194,34]}
+{"kind":"textbox","id":"sh/4vmtwra5","slide":8,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/pin9k6","slide":8,"text":"Booking has two visible documentation shapes: the newer MCP-style API contract and older REST overview. We need the final source of truth.\nPayment is the most important dependency because it controls the booking-confirmed transition.\nCRM and messaging need precise field and provider decisions before staging tests can be meaningful."}
+{"kind":"slide","id":"sl/0q9yn4","slide":9,"title":"QUESTIONS","textShapes":24}
+{"kind":"textbox","id":"sh/bq1oryts","slide":9,"text":"QUESTIONS","textPreview":"QUESTIONS","textChars":9,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/4byhgn29","slide":9,"text":"Questions For The Full-Stack Team","textPreview":"Questions For The Full-Stack Team","textChars":33,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/twra5gbq","slide":9,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/mhk3q5o7","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"shape","id":"sh/b2hwfyxo","slide":9,"bbox":[70,164,520,78]}
+{"kind":"textbox","id":"sh/4nap4r65","slide":9,"text":"1. How do incoming calls reach our AI agent?","textPreview":"1. How do incoming calls reach our AI agent?","textChars":44,"textLines":1,"bbox":[86,176,480,22]}
+{"kind":"textbox","id":"sh/t83itgfm","slide":9,"text":"Why: session start. Depends: voice routing.","textPreview":"Why: session start. Depends: voice routing.","textChars":43,"textLines":1,"bbox":[86,206,480,20]}
+{"kind":"shape","id":"sh/mp0bi9s3","slide":9,"bbox":[665,164,520,78]}
+{"kind":"textbox","id":"sh/bat47y1k","slide":9,"text":"2. What events do we receive during a call?","textPreview":"2. What events do we receive during a call?","textChars":43,"textLines":1,"bbox":[681,176,480,22]}
+{"kind":"textbox","id":"sh/ji5snelo","slide":9,"text":"Why: realtime state. Depends: CRM/logs.","textPreview":"Why: realtime state. Depends: CRM/logs.","textChars":39,"textLines":1,"bbox":[681,206,480,20]}
+{"kind":"shape","id":"sh/uxc3ylc7","slide":9,"bbox":[70,260,520,78]}
+{"kind":"textbox","id":"sh/1kre1w7m","slide":9,"text":"3. How do we know payment succeeded?","textPreview":"3. How do we know payment succeeded?","textChars":36,"textLines":1,"bbox":[86,272,480,22]}
+{"kind":"textbox","id":"sh/c3ylc7u5","slide":9,"text":"Why: confirm safely. Depends: webhook.","textPreview":"Why: confirm safely. Depends: webhook.","textChars":38,"textLines":1,"bbox":[86,302,480,20]}
+{"kind":"shape","id":"sh/j6tovaho","slide":9,"bbox":[665,260,520,78]}
+{"kind":"textbox","id":"sh/ulwval87","slide":9,"text":"4. What if payment fails or expires?","textPreview":"4. What if payment fails or expires?","textChars":36,"textLines":1,"bbox":[681,272,480,22]}
+{"kind":"textbox","id":"sh/1cfa9w3m","slide":9,"text":"Why: release slot. Depends: retry/follow-up.","textPreview":"Why: release slot. Depends: retry/follow-up.","textChars":44,"textLines":1,"bbox":[681,302,480,20]}
+{"kind":"shape","id":"sh/crmhk3q5","slide":9,"bbox":[70,356,520,78]}
+{"kind":"textbox","id":"sh/j2t83itg","slide":9,"text":"5. Where should transcripts/summaries live?","textPreview":"5. Where should transcripts/summaries live?","textChars":43,"textLines":1,"bbox":[86,368,480,22]}
+{"kind":"textbox","id":"sh/qh0fepkz","slide":9,"text":"Why: audit. Depends: CRM schema.","textPreview":"Why: audit. Depends: CRM schema.","textChars":32,"textLines":1,"bbox":[86,398,480,20]}
+{"kind":"shape","id":"sh/i5sneloj","slide":9,"bbox":[665,356,520,78]}
+{"kind":"textbox","id":"sh/7qpg3ex0","slide":9,"text":"6. How does call transfer work?","textPreview":"6. How does call transfer work?","textChars":31,"textLines":1,"bbox":[681,368,480,22]}
+{"kind":"textbox","id":"sh/0bi9s36h","slide":9,"text":"Why: escalation. Depends: TeleCMI/Vapi.","textPreview":"Why: escalation. Depends: TeleCMI/Vapi.","textChars":39,"textLines":1,"bbox":[681,398,480,20]}
+{"kind":"shape","id":"sh/pwb2hwfy","slide":9,"bbox":[70,452,520,78]}
+{"kind":"textbox","id":"sh/ed8v6psf","slide":9,"text":"7. Which WhatsApp/SMS provider?","textPreview":"7. Which WhatsApp/SMS provider?","textChars":31,"textLines":1,"bbox":[86,464,480,22]}
+{"kind":"textbox","id":"sh/7y1kre1w","slide":9,"text":"Why: delivery. Depends: templates/keys.","textPreview":"Why: delivery. Depends: templates/keys.","textChars":39,"textLines":1,"bbox":[86,494,480,20]}
+{"kind":"shape","id":"sh/wjudg7ad","slide":9,"bbox":[665,452,520,78]}
+{"kind":"textbox","id":"sh/p4r65wju","slide":9,"text":"8. What lead info is stored in CRM?","textPreview":"8. What lead info is stored in CRM?","textChars":35,"textLines":1,"bbox":[681,464,480,22]}
+{"kind":"textbox","id":"sh/ih4byhgn","slide":9,"text":"Why: sales usage. Depends: field map.","textPreview":"Why: sales usage. Depends: field map.","textChars":37,"textLines":1,"bbox":[681,494,480,20]}
+{"kind":"shape","id":"sh/72x4nap4","slide":9,"bbox":[70,548,520,78]}
+{"kind":"textbox","id":"sh/xc3ylc7u","slide":9,"text":"9. Do we have staging credentials?","textPreview":"9. Do we have staging credentials?","textChars":34,"textLines":1,"bbox":[86,560,480,22]}
+{"kind":"textbox","id":"sh/4r65wjud","slide":9,"text":"Why: testing. Depends: all integrations.","textPreview":"Why: testing. Depends: all integrations.","textChars":40,"textLines":1,"bbox":[86,590,480,20]}
+{"kind":"shape","id":"sh/f6dcbulw","slide":9,"bbox":[665,548,520,78]}
+{"kind":"textbox","id":"sh/mlkjm1cf","slide":9,"text":"10. Who owns break/fix per integration?","textPreview":"10. Who owns break/fix per integration?","textChars":39,"textLines":1,"bbox":[681,560,480,22]}
+{"kind":"textbox","id":"sh/xkf6dcbu","slide":9,"text":"Why: incidents. Depends: RACI/on-call.","textPreview":"Why: incidents. Depends: RACI/on-call.","textChars":38,"textLines":1,"bbox":[681,590,480,20]}
+{"kind":"textbox","id":"sh/4zidonyd","slide":9,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/0q9yn4","slide":9,"text":"These questions are deliberately limited to gaps not fully answered in the PRD/API docs.\nFor each question, ask the owner to provide a specific artifact: schema, endpoint, event sample, credential, or owner name.\nIf time is short, prioritize questions 1 through 5 because they block the end-to-end booking flow."}
+{"kind":"slide","id":"sl/bzevh9","slide":10,"title":"NEXT STEPS","textShapes":10}
+{"kind":"textbox","id":"sh/6tovahoz","slide":10,"text":"NEXT STEPS","textPreview":"NEXT STEPS","textChars":10,"textLines":1,"bbox":[54,34,360,24]}
+{"kind":"textbox","id":"sh/dg7adsji","slide":10,"text":"Timeline Alignment And Meeting Exit Criteria","textPreview":"Timeline Alignment And Meeting Exit Criteria","textChars":44,"textLines":1,"bbox":[54,64,900,56]}
+{"kind":"shape","id":"sh/ovahoza1","slide":10,"bbox":[54,132,1172,0]}
+{"kind":"textbox","id":"sh/z25kb6xk","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1180,50,46,24]}
+{"kind":"textbox","id":"sh/6hcrmhk3","slide":10,"text":"This week","textPreview":"This week","textChars":9,"textLines":1,"bbox":[70,168,220,30]}
+{"kind":"textbox","id":"sh/d8v6psfi","slide":10,"text":"- Finalize API contracts\n- Finalize payment state machine\n- Implement payment callbacks\n- Finalize TeleCMI event mapping\n- Finalize CRM schema","textPreview":"- Finalize API contracts | - Finalize payment state machine | - Implement payment callbacks | - Finalize TeleCMI event mapping | - Finali...","textChars":142,"textLines":5,"bbox":[80,218,430,180]}
+{"kind":"textbox","id":"sh/onyd0z61","slide":10,"text":"Next week","textPreview":"Next week","textChars":9,"textLines":1,"bbox":[650,168,220,30]}
+{"kind":"textbox","id":"sh/vy90je9c","slide":10,"text":"- End-to-end booking flow\n- Payment success flow\n- Human escalation flow\n- WhatsApp/SMS integration\n- CRM synchronization","textPreview":"- End-to-end booking flow | - Payment success flow | - Human escalation flow | - WhatsApp/SMS integration | - CRM synchronization","textChars":121,"textLines":5,"bbox":[660,218,430,180]}
+{"kind":"shape","id":"sh/6dcbulwv","slide":10,"bbox":[70,462,1060,116]}
+{"kind":"textbox","id":"sh/4zidonyd","slide":10,"text":"Leave the meeting with","textPreview":"Leave the meeting with","textChars":22,"textLines":1,"bbox":[98,488,300,26]}
+{"kind":"textbox","id":"sh/xkf6dcbu","slide":10,"text":"Final contracts | Payment webhook schema | TeleCMI event specs | CRM field map | Messaging provider | Staging credentials | Named owners","textPreview":"Final contracts | Payment webhook schema | TeleCMI event specs | CRM field map | Messaging provider | Staging credentials | Named owners","textChars":136,"textLines":1,"bbox":[98,530,940,30]}
+{"kind":"textbox","id":"sh/mtwra5gb","slide":10,"text":"Closira AI Inbound Agent MVP | Team Alignment","textPreview":"Closira AI Inbound Agent MVP | Team Alignment","textChars":45,"textLines":1,"bbox":[54,674,520,22]}
+{"kind":"notes","id":"nt/bzevh9","slide":10,"text":"Close by asking for concrete commitments, not general agreement.\nThe minimum exit criteria are final API contracts, payment webhook schema, TeleCMI event specs, CRM mapping, messaging provider, credentials, and owners.\nPropose the next demo as an end-to-end payment-success booking confirmation flow."}

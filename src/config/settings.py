@@ -10,6 +10,8 @@ from .constants import DEFAULT_BOOKING_BASE_URL, DEFAULT_OPENAI_MODEL
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 VAPI_API_KEY = os.environ.get("VAPI_API_KEY", "")
+VAPI_ASSISTANT_ID = os.environ.get("VAPI_ASSISTANT_ID", "")
+VAPI_TOOL_ID = os.environ.get("VAPI_TOOL_ID", "")
 BOOKING_API_KEY = os.environ.get("BOOKING_API_KEY", "")
 
 # Base URLs
