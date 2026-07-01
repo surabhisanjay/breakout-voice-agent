@@ -18,6 +18,7 @@ class ScoreResult:
     escalation_risk: int
     conversation_quality: int
     reasons: list[str]
+    csat_score: float = 4.5
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -105,9 +106,20 @@ class ScoringAgent:
                 82
                 + (8 if result.response and len(result.response.split()) <= 55 else -5)
                 - missing_penalty
-                - round(escalation_risk * 0.35),
             ),
         )
+        # sentiment_score ranges from 12 (angry) to 88 (excited).
+        # Normalize to 1.0 - 5.0 scale.
+        if sentiment.sentiment in {"excited", "satisfied"}:
+            csat_val = 4.8 + (quality / 100.0) * 0.2
+        elif sentiment.sentiment == "neutral":
+            csat_val = 3.8 + (quality / 100.0) * 0.7
+        elif sentiment.sentiment in {"hesitant", "confused", "urgent"}:
+            csat_val = 2.8 + (quality / 100.0) * 0.8
+        else: # frustrated, angry
+            csat_val = 1.0 + (quality / 100.0) * 1.5
+            
+        csat_score = round(max(1.0, min(5.0, csat_val)), 2)
 
         score = ScoreResult(
             lead_score=lead_score,
@@ -116,6 +128,7 @@ class ScoringAgent:
             escalation_risk=escalation_risk,
             conversation_quality=quality,
             reasons=reasons[:5],
+            csat_score=csat_score,
         )
         history = self.memory.data.setdefault("score_history", [])
         history.append({

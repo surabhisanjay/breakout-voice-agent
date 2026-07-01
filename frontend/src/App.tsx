@@ -260,32 +260,49 @@ export default function App() {
     };
   }, [searchQuery, leads, allCalls]);
 
+  const refreshLiveCalls = useCallback(async () => {
+    try {
+      const liveRes = await fetch(`${VAPI_BASE}/vapi/calls/live`);
+      if (!liveRes.ok) {
+        throw new Error('Live call feed unavailable.');
+      }
+      const liveData = await liveRes.json();
+      setLiveCalls(Array.isArray(liveData.calls) ? liveData.calls : []);
+      return true;
+    } catch (e) {
+      console.warn('Live call refresh failed:', e);
+      return false;
+    }
+  }, []);
+
   const fetchCRMState = useCallback(async () => {
     try {
-      const [fullRes, sessionsRes, leadsRes, agentsRes, liveRes] = await Promise.all([
+      const [fullRes, sessionsRes, leadsRes, agentsRes] = await Promise.all([
         fetch(`${API_BASE}/full`),
         fetch(`${API_BASE}/sessions`),
         fetch(`${API_BASE}/leads`),
-        fetch(`${API_BASE}/agents/list`),
-        fetch(`${VAPI_BASE}/vapi/calls/live`)
+        fetch(`${API_BASE}/agents/list`)
       ]);
-
-      if (!fullRes.ok || !sessionsRes.ok || !leadsRes.ok || !agentsRes.ok || !liveRes.ok) {
-        throw new Error('API request failed. Verify backend services are active.');
-      }
 
       const fullData = await fullRes.json();
       const sessionsData = await sessionsRes.json();
       const leadsData = await leadsRes.json();
       const agentsData = await agentsRes.json();
-      const liveData = await liveRes.json();
 
       setFullAnalytics(fullData);
       setAllCalls(Array.isArray(sessionsData) ? sessionsData : []);
       setLeads(Array.isArray(leadsData) ? leadsData : []);
       setAgents(Array.isArray(agentsData) ? agentsData : []);
-      setLiveCalls(Array.isArray(liveData.calls) ? liveData.calls : []);
-      setErrorMsg('');
+
+      const liveOk = await refreshLiveCalls();
+      if (!fullRes.ok || !sessionsRes.ok || !leadsRes.ok || !agentsRes.ok) {
+        throw new Error('CRM data is partially unavailable. Live calls are still refreshing.');
+      }
+      if (!liveOk) {
+        setErrorMsg('Live calls are temporarily unavailable. Check the backend websocket and /vapi/calls/live endpoint.');
+      } else {
+        setErrorMsg('');
+      }
     } catch (e: any) {
       console.error(e);
       setErrorMsg(e.message || 'Error occurred connecting to Closira backend services.');
@@ -406,6 +423,7 @@ export default function App() {
           if (eventType === 'call_started') {
             setNotifs(prev => [{ id: Date.now(), title: 'Call Started', text: `Session ${payload.session_id} is active.` }, ...prev]);
             setNotifCount(c => c + 1);
+            refreshLiveCalls();
           } else if (eventType === 'escalated') {
             setNotifs(prev => [{ id: Date.now(), title: 'Escalation Triggered', text: `Loop/frustration detected on session ${payload.session_id}.` }, ...prev]);
             setNotifCount(c => c + 1);
@@ -422,6 +440,8 @@ export default function App() {
                 label: payload.sentiment ?? 'neutral'
               }]);
             }
+          } else if (eventType === 'call_updated' || eventType === 'call_ended') {
+            refreshLiveCalls();
           }
 
           fetchCRMState();
@@ -454,6 +474,13 @@ export default function App() {
   useEffect(() => {
     fetchCRMState();
   }, [fetchCRMState]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshLiveCalls();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshLiveCalls]);
 
   // Aggregate statistics for dashboard metrics
   const dashboardKpis = useMemo(() => {

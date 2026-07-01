@@ -175,6 +175,42 @@ def test_whatsapp_client_sends_wati_template_confirmation(monkeypatch) -> None:
     assert posted["json"]["parameters"][0]["value"] == "BK-123"
 
 
+def test_whatsapp_client_rejects_invalid_wati_receiver(monkeypatch) -> None:
+    monkeypatch.setenv("WHATSAPP_ENABLED", "true")
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "wati")
+    monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "token123")
+    monkeypatch.setenv("WHATSAPP_API_ENDPOINT", "https://wati.example")
+    monkeypatch.setenv("WHATSAPP_TEMPLATE_NAME", "booking_conf_temp")
+
+    class FakeResponse:
+        status_code = 200
+        content = b"{}"
+
+        @staticmethod
+        def json():
+            return {
+                "result": True,
+                "receivers": [
+                    {
+                        "localMessageId": "wati.invalid",
+                        "isValidWhatsAppNumber": False,
+                        "errors": [],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        "src.integrations.whatsapp.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    result = WhatsAppClient().send_booking_confirmation("9876543210", {})
+
+    assert result.sent is False
+    assert result.message_id == "wati.invalid"
+    assert result.error == "invalid_whatsapp_number"
+
+
 def test_booking_confirmation_records_whatsapp_status(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("WHATSAPP_ENABLED", "false")
     memory = ConversationMemory(tmp_path / "booking.json")

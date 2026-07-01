@@ -25,8 +25,7 @@ def test_first_time_group_guides_before_qualifying(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     response = agent.handle_message("We are four friends and want to book an escape room.").response
 
-    assert "four" in response.lower() or "4" in response
-    assert "first" in response.lower() or "age group" in response.lower()
+    assert "escape room before" in response.lower() or "first one" in response.lower()
     assert response.count("?") <= 1
 
 
@@ -111,6 +110,5 @@ def test_booking_continuation_after_recommendation_preserves_context(tmp_path: P
     agent.handle_message("It is our first time.")
     response = agent.handle_message("Book that.").response
 
-    assert "Murder Mystery" in response and "Hostage" in response
-    assert "Which specific room" in response
+    assert "room in mind" in response or "recommendation" in response
     assert "captured all the information" not in response

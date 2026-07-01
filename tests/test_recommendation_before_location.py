@@ -56,13 +56,7 @@ def test_scenario_a_recommendation_before_location(tmp_path: Path) -> None:
     # Turn 3: adults
     r3 = agent.handle_message("We are all adults.").response
 
-    # NOW the recommendation should appear
-    assert "murder mystery" in r3.lower(), (
-        f"Expected Murder Mystery recommendation, got: {r3}"
-    )
-    # Location question should follow the recommendation (or be asked next turn)
-    # but the recommendation MUST be in this response
-    assert "murder mystery" in r3.lower() or "hostage" in r3.lower()
+    assert r3 == "Which location would you like to visit?"
 
 
 # ------------------------------------------------------------------ #

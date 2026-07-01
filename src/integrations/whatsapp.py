@@ -48,10 +48,6 @@ class WhatsAppClient:
         self.broadcast_name = os.environ.get("WHATSAPP_BROADCAST_NAME", "booking_confirmation").strip()
 
     def send_booking_confirmation(self, phone: str, booking: dict[str, Any]) -> WhatsAppResult:
-        import sys
-        if "pytest" not in sys.modules:
-            phone = "8217008407"
-
         if not self.enabled:
             return WhatsAppResult(enabled=False, sent=False, error="whatsapp_disabled")
         if not self.access_token:
@@ -100,9 +96,10 @@ class WhatsAppClient:
                     if not message_id and isinstance(data, dict):
                         message_id = str(data.get("messageId") or data.get("id") or "")
                     
-                    if 200 <= response.status_code < 300:
+                    accepted, error = self._wati_response_status(response.status_code, data)
+                    if accepted:
                         return WhatsAppResult(True, True, response.status_code, message_id, "")
-                    return WhatsAppResult(True, False, response.status_code, message_id, str(data)[:500])
+                    return WhatsAppResult(True, False, response.status_code, message_id, error)
                 except Exception as exc:
                     return WhatsAppResult(True, False, 0, "", f"{type(exc).__name__}: {exc}")
             else:
@@ -130,9 +127,10 @@ class WhatsAppClient:
                     if isinstance(data, dict):
                         message_id = str(data.get("messageId") or data.get("id") or "")
                     
-                    if 200 <= response.status_code < 300:
+                    accepted, error = self._wati_response_status(response.status_code, data)
+                    if accepted:
                         return WhatsAppResult(True, True, response.status_code, message_id, "")
-                    return WhatsAppResult(True, False, response.status_code, message_id, str(data)[:500])
+                    return WhatsAppResult(True, False, response.status_code, message_id, error)
                 except Exception as exc:
                     return WhatsAppResult(True, False, 0, "", f"{type(exc).__name__}: {exc}")
         else:
@@ -171,6 +169,25 @@ class WhatsAppClient:
         if len(digits) >= 11:
             return digits
         return ""
+
+    @staticmethod
+    def _wati_response_status(status_code: int, data: Any) -> tuple[bool, str]:
+        if not 200 <= status_code < 300:
+            return False, str(data)[:500]
+        if not isinstance(data, dict):
+            return True, ""
+        if data.get("result") is False:
+            return False, str(data.get("info") or data.get("message") or data.get("error") or "wati_rejected")[:500]
+        receivers = data.get("receivers")
+        if isinstance(receivers, list):
+            for receiver in receivers:
+                if not isinstance(receiver, dict):
+                    continue
+                if receiver.get("isValidWhatsAppNumber") is False:
+                    return False, "invalid_whatsapp_number"
+                if receiver.get("errors"):
+                    return False, str(receiver["errors"])[:500]
+        return True, ""
 
     @staticmethod
     def _message_payload(recipient: str, booking: dict[str, Any]) -> dict[str, Any]:

@@ -2,7 +2,7 @@ import sqlite3
 import os
 from pathlib import Path
 
-DB_PATH = Path("/Users/chandrikasanjay/breakout-voice-agent/memory/analytics.db")
+DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "analytics.db"
 
 def get_db_connection() -> sqlite3.Connection:
     """Returns a thread-safe connection to the SQLite database."""

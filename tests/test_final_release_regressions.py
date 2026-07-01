@@ -151,6 +151,8 @@ def test_booking_agent_restart_revalidates_and_completes_persisted_slot(tmp_path
 
 def test_handoff_summary_failure_never_suppresses_escalation(tmp_path, monkeypatch) -> None:
     memory = ConversationMemory(tmp_path / "handoff.json")
+    memory.data["phone"] = "9876543210"
+    memory.save()
     inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
     monkeypatch.setattr(
         main_module.HandoffSummaryAgent,
@@ -283,6 +285,8 @@ def test_repeated_identical_question_escalates_instead_of_looping(tmp_path) -> N
     final = None
     for _ in range(3):
         final, booking, active = dispatch("blah blah blah xyz", inbound, booking, active)
+        print("TURN:", _, "NEXT_AGENT:", final.next_agent, "ESCALATION:", final.escalation)
     assert final is not None
+    print("FINAL_NEXT_AGENT:", final.next_agent, "FINAL_ESCALATION:", final.escalation)
     assert final.next_agent == "escalation_agent"
     assert final.escalation["reason"] == "Repeated conversation loop detected"

@@ -16,27 +16,11 @@ DEFAULT_MEMORY = {
     "first_name": "",
     "last_name": "",
     "phone": "",
+    "phone_fragment": "",
     "email": "",
-    "call_id": "",
-    "call_status": "unknown",
-    "call_status_source": "none",
-    "call_started_at": "",
-    "call_ended_at": "",
-    "call_ended_reason": "",
-    "last_call_activity_at": "",
-    "vapi_assistant_id": "",
-    "vapi_phone_number_id": "",
-    "vapi_monitor_listen_url": "",
-    "vapi_monitor_control_url": "",
-    "vapi_provider": "",
-    "vapi_environment": "",
-    "vapi_region": "",
-    "vapi_event_count": 0,
-    "vapi_events": [],
-    "vapi_transcript_events": [],
-    "vapi_errors": [],
     "location": "",
     "participants": "",
+    "relationship": "",
     "participants_min": "",
     "participants_max": "",
     "age_group": "",
@@ -47,6 +31,7 @@ DEFAULT_MEMORY = {
     "event_type": "",
     "preferred_date": "",
     "preferred_time": "",
+    "preferred_period": "",
     "food_required": "",
     "budget_range": "",
     "room": "",
@@ -55,24 +40,9 @@ DEFAULT_MEMORY = {
     "sentiment_confidence": 0.0,
     "sentiment_reason": "",
     "sentiment_history": [],
-    "score_history": [],
-    "learning_metrics": {
-        "turns": 0,
-        "intent_counts": {},
-        "sentiment_counts": {},
-        "handoff_count": 0,
-        "booking_confirmed_count": 0,
-        "whatsapp_sent_count": 0,
-        "last_insights": [],
-    },
     "escalation_state": {"escalate": False, "reason": "", "summary": ""},
     "escalation_history": [],
-    "escalation_requests": [],
-    "support_tickets": [],
-    "unresolved_queries": [],
     "failed_answer_count": 0,
-    "authentication_failure_count": 0,
-    "payment_status": "not_started",
     "recommended_option": "",
     "selected_slot": "",
     # ------------------------------------------------------------------ #
@@ -84,11 +54,13 @@ DEFAULT_MEMORY = {
     "booking_consent_pending": False,
     "booking_started": False,
     "conversation": [],
+    "question_history": [],
     "discussed_options": [],
     "last_discussed_topic": "",
     "pending_policy_explanation": False,
     "customer_preferences": [],
     "concerns": [],
+    "rejected_options": [],
     "pending_confirmation": None,
     "audit_trail": [],
 }
@@ -140,14 +112,10 @@ class ConversationMemory:
             merged["conversation"] = []
         for key in [
             "discussed_options", "customer_preferences", "concerns", "audit_trail",
-            "sentiment_history", "score_history", "escalation_history",
-            "escalation_requests", "support_tickets", "unresolved_queries",
-            "vapi_events", "vapi_transcript_events", "vapi_errors",
+            "sentiment_history", "escalation_history", "rejected_options",
         ]:
             if not isinstance(merged.get(key), list):
                 merged[key] = []
-        if not isinstance(merged.get("learning_metrics"), dict):
-            merged["learning_metrics"] = copy.deepcopy(DEFAULT_MEMORY["learning_metrics"])
         if not isinstance(merged.get("escalation_state"), dict):
             merged["escalation_state"] = copy.deepcopy(DEFAULT_MEMORY["escalation_state"])
         return merged
@@ -179,6 +147,78 @@ class ConversationMemory:
         ]:
             self.data[field] = DEFAULT_MEMORY[field]
         self.save()
+
+    @staticmethod
+    def normalize_entity_aliases(message: str) -> str:
+        """Canonicalize high-confidence ASR entity variants before routing."""
+        normalized = message
+        replacements = (
+            (r"\bwhite\s+food\b", "Whitefield"),
+            (r"\bwhite\s+field\b", "Whitefield"),
+            (r"\bwide\s+field\b", "Whitefield"),
+            (r"\bwhite\s+shield\b", "Whitefield"),
+            (r"\bwhitfield\b", "Whitefield"),
+            (r"\bwhitefeild\b", "Whitefield"),
+            (r"\bjp\s+nogger\b", "JP Nagar"),
+            (r"\bjp\s+nagarh?\b", "JP Nagar"),
+            (r"\bjp\s+nuggets?\b", "JP Nagar"),
+            (r"\bjp\s+nagger\b", "JP Nagar"),
+            (r"\bkoramangla\b", "Koramangala"),
+            (r"\bkoramangal\b", "Koramangala"),
+            (r"\bmurder\s+history\b", "Murder Mystery"),
+            (r"\bmurder\s+mistery\b", "Murder Mystery"),
+            (r"\bmystery\s+murder\b", "Murder Mystery"),
+            (r"\bhostages\b", "Hostage"),
+            (r"\bbomb\s+diffusion\b", "Bomb Defusal"),
+            (r"\bbomb\s+diffusal\b", "Bomb Defusal"),
+            (r"\bbomb\s+refusal\b", "Bomb Defusal"),
+        )
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+        return normalized
+
+    def apply_reference_aliases(self, message: str) -> str:
+        """Expand same/previous/that-one references into stored high-confidence values."""
+        expanded = message
+        lowered = expanded.lower()
+
+        phone = str(self.data.get("phone") or "").strip()
+        if phone and re.search(r"\b(?:same|previous|old)\s+(?:phone|number|mobile|contact)\b", lowered):
+            expanded = re.sub(
+                r"\b(?:same|previous|old)\s+(?:phone|number|mobile|contact)\b",
+                f"phone is {phone}",
+                expanded,
+                flags=re.IGNORECASE,
+            )
+
+        location = str(self.data.get("location") or "").strip()
+        if location and re.search(r"\b(?:same|previous|that)\s+location\b|\buse\s+previous\s+location\b", lowered):
+            expanded = re.sub(
+                r"\b(?:same|previous|that)\s+location\b|\buse\s+previous\s+location\b",
+                location,
+                expanded,
+                flags=re.IGNORECASE,
+            )
+
+        room = str(self.data.get("room") or self.data.get("recommended_option") or "").strip()
+        if room and re.search(r"\b(?:same|previous|that|this)\s+(?:room|one)\b|\buse\s+previous\s+room\b|\bthat\s+one\b|\bthis\s+one\b", lowered):
+            expanded = re.sub(
+                r"\b(?:same|previous|that|this)\s+(?:room|one)\b|\buse\s+previous\s+room\b|\bthat\s+one\b|\bthis\s+one\b",
+                room,
+                expanded,
+                flags=re.IGNORECASE,
+            )
+
+        booking_ref = str(self.data.get("booking_ref") or self.data.get("booking_id") or "").strip()
+        if booking_ref and re.search(r"\b(?:same|previous|that|this)\s+booking\b|\buse\s+previous\s+booking\b", lowered):
+            expanded = re.sub(
+                r"\b(?:same|previous|that|this)\s+booking\b|\buse\s+previous\s+booking\b",
+                f"booking {booking_ref}",
+                expanded,
+                flags=re.IGNORECASE,
+            )
+
+        return expanded
 
     def set_field(self, field: str, new_value: Any, message: str = "", expected_field: str = "") -> bool:
         """
@@ -286,7 +326,9 @@ class ConversationMemory:
 
     def merge_message(self, message: str, intent: str, recommendation: str = "", expected_field: str = "") -> dict[str, Any]:
         self._intent_changing = bool(intent and intent != self.data.get("intent", ""))
-        text = self.normalize_number_words(message.strip())
+        text = self.normalize_number_words(
+            self.apply_reference_aliases(self.normalize_entity_aliases(message.strip()))
+        )
         lowered = text.lower()
         extracted: dict[str, Any] = {}
 
@@ -308,6 +350,8 @@ class ConversationMemory:
                 extracted["customer_name"] = name
 
         phone = self._extract_phone(text)
+        if not phone and expected_field == "phone":
+            phone = self.capture_phone_fragment(message)
         if phone:
             if self.set_field("phone", phone, message, expected_field):
                 extracted["phone"] = phone
@@ -327,13 +371,27 @@ class ConversationMemory:
             if self.set_field("room", room, message, expected_field):
                 extracted["room"] = room
 
-        participant_range = self._extract_participant_range(lowered)
-        participants = participant_range[1] if participant_range else self._extract_participants(lowered)
+        is_participants_field = (expected_field == "participants")
+        participant_range = self._extract_participant_range(lowered, allow_bare=is_participants_field)
+        participants = participant_range[1] if participant_range else self._extract_participants(lowered, allow_bare=is_participants_field)
         if participants:
             if self.set_field("participants", participants, message, expected_field):
                 extracted["participants"] = participants
             if participant_range:
                 self.data["participants_min"], self.data["participants_max"] = participant_range
+
+        relationship = self._extract_relationship(lowered)
+        if relationship:
+            if self.set_field("relationship", relationship, message, expected_field):
+                extracted["relationship"] = relationship
+            # A couple is two players, not an events package. Do not overwrite
+            # an explicit participant count from the same message.
+            if not participants and not self.data.get("participants"):
+                if self.set_field("participants", 2, message, expected_field="participants"):
+                    extracted["participants"] = 2
+            if not self.data.get("age_group"):
+                if self.set_field("age_group", "adults", message, expected_field="age_group"):
+                    extracted["age_group"] = "adults"
 
         age_group, age_detail = self._extract_age_group(
             lowered,
@@ -373,6 +431,11 @@ class ConversationMemory:
         if preferred_time:
             if self.set_field("preferred_time", preferred_time, message, expected_field):
                 extracted["preferred_time"] = preferred_time
+
+        preferred_period = self._extract_preferred_period(lowered)
+        if preferred_period:
+            if self.set_field("preferred_period", preferred_period, message, expected_field):
+                extracted["preferred_period"] = preferred_period
 
         food_required = self._extract_food_required(lowered)
         if food_required != "":
@@ -416,7 +479,7 @@ class ConversationMemory:
         if self.data.get("intent") == "escape_room_inquiry":
             required = [
                 "participants", "age_group", "location", "room", "preferred_date",
-                "selected_slot", "first_name", "last_name", "phone", "booking_id",
+                "selected_slot", "customer_name", "phone", "booking_id",
             ]
             return [field for field in required if not self.data.get(field)]
         return self.missing_fields(self.data.get("intent", ""), include_contact=True)
@@ -465,11 +528,9 @@ class ConversationMemory:
             required.append("room")
         name_parts = str(self.data.get("customer_name", "")).split()
         has_first_name = bool(self.data.get("first_name") or name_parts)
-        has_last_name = bool(self.data.get("last_name") or len(name_parts) > 1)
         return bool(
             (self.data.get("participants") or self.data.get("company_size"))
             and has_first_name
-            and has_last_name
             and all(self.data.get(field) for field in required)
         )
 
@@ -522,6 +583,8 @@ class ConversationMemory:
             text = re.sub(rf"\b{phrase}\b", str(value), text, flags=re.IGNORECASE)
 
         number_words = {
+            "zero": 0,
+            "oh": 0,
             "one": 1,
             "two": 2,
             "three": 3,
@@ -553,7 +616,16 @@ class ConversationMemory:
 
     @staticmethod
     def _extract_name(text: str) -> str:
+        # Accept deliberately spelled names from voice ASR, including "I Double
+        # D", while requiring a long letter run to avoid ordinary pronouns.
+        spelled_text = re.sub(r"\bdouble\s+([A-Za-z])\b", r"\1 \1", text, flags=re.IGNORECASE)
+        spelled_match = re.search(r"(?:\b[A-Za-z]\b\s*){5,}", spelled_text)
+        if spelled_match:
+            candidate = "".join(re.findall(r"[A-Za-z]", spelled_match.group(0))).title()
+            if ConversationMemory._is_plausible_name(candidate):
+                return candidate
         patterns = [
+            r"(?:^|[.;]\s*)([A-Za-z]+(?:\s+[A-Za-z]+){1,2})(?=\s*[.;,]\s*(?:(?:\+91[\s-]?)|0)?[6-9]\d{9}\b)",
             r"\bname\s*:\s*([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|contact\s+number|phone|mobile|$))",
             r"\bactually\s+(?:use|make it|change(?:\s+it)?\s+to)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s*(?:[.;,]|$))",
             r"\bmy first name is\s+([A-Za-z]+)(?=\s*(?:[.;,]|$))",
@@ -563,6 +635,7 @@ class ConversationMemory:
             r"\bthis is\s+(my\s+first\s+time)(?=\s*(?:[.;,]|$))",
             r"\bi am\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
             r"\bi'm\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
+            r"\bit(?:'s| is)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2}?)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
             r"\bthis is\s+([A-Za-z]+)(?=\s+(?:and\s+)?(?:my\s+)?phone|[,.;]|$)",
         ]
         for pattern in patterns:
@@ -584,6 +657,7 @@ class ConversationMemory:
             return False
         rejected_words = {
             "a", "an", "the", "my", "our", "your", "first", "time", "beginner",
+            "in", "google",
             "adult", "adults", "kid", "kids", "teen", "teens", "friend", "friends",
             "booking", "book", "room", "escape", "ready", "tomorrow", "today", "friday",
             "phone", "number", "available", "availability",
@@ -667,6 +741,83 @@ class ConversationMemory:
             return number
         return ""
 
+    def capture_phone_fragment(self, text: str) -> str:
+        """Accumulate split voice digits and remove ASR chunk overlap."""
+        fragment = self._phone_digit_stream(text)
+        if not fragment:
+            return ""
+
+        existing = re.sub(r"\D", "", str(self.data.get("phone_fragment") or ""))
+        merged = self._merge_phone_fragments(existing, fragment)
+        national = merged[2:] if merged.startswith("91") and len(merged) == 12 else merged
+
+        if len(national) == 10 and national[0] in "6789":
+            self.data["phone"] = national
+            self.data["phone_fragment"] = ""
+            self.data["has_phone"] = True
+            self.data["consecutive_phone_requests"] = 0
+            self.save()
+            logger.info("PHONE_EXTRACTED_FROM_FRAGMENTS=%s", national)
+            return national
+
+        # Retain only plausible partial phone input. Longer unmatched streams
+        # are discarded instead of guessing a customer contact number.
+        if 3 <= len(merged) < 10 or (merged.startswith("91") and len(merged) < 12):
+            self.data["phone_fragment"] = merged
+            self.save()
+        else:
+            self.data["phone_fragment"] = ""
+            self.save()
+        return ""
+
+    @staticmethod
+    def _phone_digit_stream(text: str) -> str:
+        digit_words = {
+            "zero": "0", "oh": "0", "o": "0",
+            "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+            "six": "6", "seven": "7", "eight": "8", "nine": "9",
+        }
+        tokens = re.findall(r"[a-z]+|\d+", text.lower())
+        digits: list[str] = []
+        multiplier = 1
+        for token in tokens:
+            if token == "double":
+                multiplier = 2
+                continue
+            if token == "triple":
+                multiplier = 3
+                continue
+            if token.isdigit():
+                digits.extend(list(token) * multiplier)
+                multiplier = 1
+                continue
+            digit = digit_words.get(token)
+            if digit is not None:
+                digits.extend([digit] * multiplier)
+                multiplier = 1
+                continue
+            multiplier = 1
+        return "".join(digits)
+
+    @staticmethod
+    def _merge_phone_fragments(existing: str, incoming: str) -> str:
+        if not existing:
+            return incoming
+        direct = existing + incoming
+        if len(direct) == 10 or (len(direct) == 12 and direct.startswith("91")):
+            return direct
+
+        # ASR providers commonly repeat one or more words across finalized
+        # transcript chunks. Prefer an overlap only when it yields a complete
+        # national or country-prefixed phone number.
+        for overlap in range(min(len(existing), len(incoming)), 0, -1):
+            if existing[-overlap:] != incoming[:overlap]:
+                continue
+            candidate = existing + incoming[overlap:]
+            if len(candidate) == 10 or (len(candidate) == 12 and candidate.startswith("91")):
+                return candidate
+        return direct
+
     @staticmethod
     def _extract_time(text: str) -> str:
         lowered = text.lower().strip()
@@ -677,11 +828,28 @@ class ConversationMemory:
         }
         for word, digit in words.items():
             lowered = re.sub(rf"\b{word}\b", digit, lowered)
+        minute_words = {
+            "oh five": "05", "zero five": "05", "five": "05", "ten": "10",
+            "fifteen": "15", "twenty": "20", "twenty five": "25",
+            "thirty": "30", "forty": "40", "forty five": "45", "fifty": "50",
+        }
+        for phrase, minute in sorted(minute_words.items(), key=lambda item: len(item[0]), reverse=True):
+            lowered = re.sub(rf"\b(\d{{1,2}})\s+{phrase}\s*(am|pm)\b", rf"\1:{minute} \2", lowered)
         match = re.search(r"\b(\d{1,2})(?::(\d{2})?)?\s*(am|pm)\b", lowered)
         if match:
             hour = str(int(match.group(1)))
             minute = match.group(2) or "00"
             return f"{hour}:{minute} {match.group(3).upper()}"
+        return ""
+
+    @staticmethod
+    def _extract_preferred_period(lowered: str) -> str:
+        if re.search(r"\b(?:evening|tonight)\b", lowered):
+            return "evening"
+        if re.search(r"\bmorning\b", lowered):
+            return "morning"
+        if re.search(r"\bafternoon\b", lowered):
+            return "afternoon"
         return ""
 
     @staticmethod
@@ -692,13 +860,20 @@ class ConversationMemory:
     @classmethod
     def _extract_location(cls, lowered: str) -> str:
         exact_matches = [
-            location for location in cls.LOCATIONS if location.lower() in lowered
+            (lowered.rfind(location.lower()), location)
+            for location in cls.LOCATIONS if location.lower() in lowered
         ]
         if len(exact_matches) > 1:
-            return ""
+            has_explicit_choice = bool(re.search(r"\b(?:or|either)\b", lowered))
+            has_correction = bool(
+                re.search(r"\b(?:actually|no,?\s*wait|instead|change|make it|rather)\b", lowered)
+            )
+            if has_explicit_choice and not has_correction:
+                return ""
+            return max(exact_matches, key=lambda item: item[0])[1]
         # Exact match first
         if exact_matches:
-            return exact_matches[0]
+            return exact_matches[0][1]
         if "jp" in lowered and "nagar" in lowered:
             return "JP Nagar"
         # Fuzzy fallback for Whisper transcription errors
@@ -742,7 +917,11 @@ class ConversationMemory:
         _KNOWN: dict[str, str] = {
             "jp nuggets": "JP Nagar",
             "jp nagger": "JP Nagar",
+            "jp nogger": "JP Nagar",
+            "jp nagarh": "JP Nagar",
             "white shield": "Whitefield",
+            "white food": "Whitefield",
+            "white field": "Whitefield",
             "wide field": "Whitefield",
             "whitfield": "Whitefield",
             "whitefeild": "Whitefield",
@@ -760,7 +939,11 @@ class ConversationMemory:
     def _extract_room(lowered: str) -> str:
         rooms = {
             "murder mystery": "Murder Mystery",
+            "murder history": "Murder Mystery",
+            "murder mistery": "Murder Mystery",
+            "mystery murder": "Murder Mystery",
             "hostage": "Hostage",
+            "hostages": "Hostage",
             "curse of the pharaoh": "Curse of the Pharaoh",
             "pharaoh's curse": "Curse of the Pharaoh",
             "pharaohs curse": "Curse of the Pharaoh",
@@ -772,6 +955,9 @@ class ConversationMemory:
             "the forbidden forest": "The Forbidden Forest",
             "forbidden forest": "The Forbidden Forest",
             "bomb defusal": "Bomb Defusal",
+            "bomb diffusion": "Bomb Defusal",
+            "bomb diffusal": "Bomb Defusal",
+            "bomb refusal": "Bomb Defusal",
             "bomb defuser": "Bomb Defusal",
             "defusal": "Bomb Defusal",
             "prison break": "Prison Break",
@@ -796,7 +982,18 @@ class ConversationMemory:
         return ""
 
     @staticmethod
-    def _extract_participants(lowered: str) -> int | str:
+    def _extract_relationship(lowered: str) -> str:
+        if re.search(
+            r"\b(?:couple|husband\s+and\s+wife|wife\s+and\s+husband|"
+            r"girlfriend\s+and\s+boyfriend|boyfriend\s+and\s+girlfriend|"
+            r"my\s+(?:husband|wife|girlfriend|boyfriend)\s+and\s+i|two\s+of\s+us)\b",
+            lowered,
+        ):
+            return "couple"
+        return ""
+
+    @staticmethod
+    def _extract_participants(lowered: str, allow_bare: bool = False) -> int | str:
         if re.search(r"\b(these|those|both|either)\s+\d{1,2}\b", lowered):
             return ""
         if re.search(r"\ball\s+(are|of us are)\s+\d{1,2}\s*(plus|\+)\b", lowered):
@@ -819,6 +1016,7 @@ class ConversationMemory:
             r"\bfor\s+(\d{1,4})\b",
             r"\bwe are\s+(?:(?:actually|now)\s+)?(\d{1,4})\b",
             r"\b(\d{1,4})\s*of us\b",
+            r"\b(?:actually\s+)?(?:make|change|update)(?:\s+(?:it|that|us|the\s+group))?\s+(?:to\s+)?(\d{1,4})\b",
         ]
         for pattern in patterns:
             match = re.search(pattern, lowered)
@@ -826,7 +1024,14 @@ class ConversationMemory:
                 return int(match.group(1))
 
         # Check for "a couple" or "two of us"
-        if "couple" in lowered or "two of us" in lowered or "both of us" in lowered or "wife and me" in lowered or "husband and me" in lowered or "my wife and i" in lowered:
+        if (
+            re.search(r"\b(?:a couple|couple booking|we(?:'re| are)(?: a)? couple)\b", lowered)
+            or "two of us" in lowered
+            or "both of us" in lowered
+            or "wife and me" in lowered
+            or "husband and me" in lowered
+            or "my wife and i" in lowered
+        ):
             return 2
 
         # Check for "son and 9 friends"
@@ -839,19 +1044,35 @@ class ConversationMemory:
         if me_friend_match:
             return int(me_friend_match.group(1)) + 1
 
+        # Fallback to bare number extraction when allowed
+        if allow_bare:
+            bare_match = re.search(r"\b(\d{1,4})\b", lowered)
+            if bare_match:
+                return int(bare_match.group(1))
+
         return ""
 
     @staticmethod
-    def _extract_participant_range(lowered: str) -> tuple[int, int] | None:
+    def _extract_participant_range(lowered: str, allow_bare: bool = False) -> tuple[int, int] | None:
         match = re.search(
             r"\b(\d{1,4})\s*(?:to|[-–—])\s*(\d{1,4})\s*"
             r"(?:people|persons|guests|participants|players|members|friends|adults)\b",
             lowered,
         )
-        if not match:
-            return None
-        low, high = sorted((int(match.group(1)), int(match.group(2))))
-        return low, high
+        if match:
+            low, high = sorted((int(match.group(1)), int(match.group(2))))
+            return low, high
+
+        if allow_bare:
+            # Match bare range like "10 to 12" or "10 2 12"
+            bare_range = re.search(
+                r"\b(\d{1,4})\s*(?:to|[-–—]|2)\s*(\d{1,4})\b",
+                lowered,
+            )
+            if bare_range:
+                low, high = sorted((int(bare_range.group(1)), int(bare_range.group(2))))
+                return low, high
+        return None
 
     @staticmethod
     def _extract_age_group(lowered: str, allow_bare_range: bool = False) -> tuple[str, str]:
@@ -950,12 +1171,19 @@ class ConversationMemory:
     def _extract_experience_level(lowered: str) -> str:
         beginner_terms = (
             "beginner", "first time", "first-time", "never done", "never played",
+            "first timer", "first timers", "first-timer", "first-timers",
             "none of us have played", "none of us has played", "new to escape",
             "none of us has ever done", "none of us have ever done",
+            "first escape room", "our first escape room", "my first escape room",
         )
         if any(term in lowered for term in beginner_terms):
             return "beginner"
-        if "experienced" in lowered or "done escape rooms before" in lowered:
+        experienced_terms = (
+            "experienced", "done escape rooms before", "played before",
+            "have played before", "we've played before", "we have played before",
+            "done one before", "not our first escape room",
+        )
+        if any(term in lowered for term in experienced_terms):
             return "experienced"
         return ""
 
@@ -965,7 +1193,7 @@ class ConversationMemory:
             return "beginner"
         if any(term in lowered for term in ("story-driven", "story driven", "story", "mystery", "investigation")):
             return "story"
-        if any(term in lowered for term in ("challenging", "challenge", "hard", "hardest", "intense", "fast-paced", "pressure")):
+        if any(term in lowered for term in ("challenging", "challenge", "difficult", "hard", "hardest", "tougher", "intense", "fast-paced", "pressure")):
             return "challenging"
         return ""
 

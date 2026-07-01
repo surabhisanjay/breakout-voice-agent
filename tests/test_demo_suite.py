@@ -110,8 +110,8 @@ def test_scenario_3_family_with_kids(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     response = turn(agent, "We have 5 children aged 11 who want to try an escape room.")
 
-    assert "Murder Mystery" in response or "Hostage" in response, (
-        f"Expected beginner-friendly recommendation for kids: {response}"
+    assert "location" in response.lower(), (
+        f"Expected location qualification before recommendation: {response}"
     )
     # Must not recommend Bomb Defusal or Classified for young kids
     assert "Bomb Defusal" not in response, f"Should not recommend Bomb Defusal for kids: {response}"

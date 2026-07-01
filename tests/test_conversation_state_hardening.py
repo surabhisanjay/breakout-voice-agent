@@ -186,6 +186,18 @@ def test_spoken_phone_number_parsing(tmp_path: Path, spoken: str, digits: str) -
     assert memory._extract_phone(spoken) == digits
 
 
+def test_split_spoken_phone_merges_overlapping_asr_chunks(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+
+    first = memory.capture_phone_fragment("eight two one seven zero zero eight four zero")
+    second = memory.capture_phone_fragment("four zero seven")
+
+    assert first == ""
+    assert second == "8217008407"
+    assert memory.data["phone"] == "8217008407"
+    assert memory.data["phone_fragment"] == ""
+
+
 def test_name_correction_overwrites_existing_name(tmp_path: Path) -> None:
     memory = _memory(tmp_path, customer_name="Siddharth", first_name="Siddharth", last_name="")
     agent = BookingAgent(memory)
@@ -268,3 +280,30 @@ def test_room_correction_clears_selected_slot_but_does_not_escalate(tmp_path: Pa
 
     assert memory.data["room"] == "Hostage"
     assert memory.data["selected_slot"] == ""
+
+
+def test_bare_participant_extraction(tmp_path: Path) -> None:
+    memory = _memory(
+        tmp_path,
+        intent="escape_room_inquiry",
+    )
+
+    # 1. Direct unit test of memory helper
+    norm_text_range = memory.normalize_number_words("ten to twelve").lower() # -> "10 to 12"
+    rng = memory._extract_participant_range(norm_text_range, allow_bare=True)
+    assert rng == (10, 12)
+
+    norm_text_num = memory.normalize_number_words("ten").lower() # -> "10"
+    num = memory._extract_participants(norm_text_num, allow_bare=True)
+    assert num == 10
+
+    # 2. Test full message merging when participants is expected_field
+    memory.merge_message("ten to twelve", intent="escape_room_inquiry", expected_field="participants")
+    assert memory.data["participants"] == 12
+    assert memory.data["participants_min"] == 10
+    assert memory.data["participants_max"] == 12
+
+    # Clear and test single bare number
+    memory.data["participants"] = ""
+    memory.merge_message("ten", intent="escape_room_inquiry", expected_field="participants")
+    assert memory.data["participants"] == 10

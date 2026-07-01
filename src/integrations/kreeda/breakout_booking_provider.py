@@ -69,3 +69,6 @@ class BreakoutBookingProvider:
 
     def create_confirmed_booking(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.create_confirmed_booking(payload)
+
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict[str, Any]:
+        return self.client.check_payment_status(venue_id, booking_id)

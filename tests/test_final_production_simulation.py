@@ -58,8 +58,7 @@ def test_random_booking_paths_have_no_loops_false_confirmation_or_memory_loss(
         assert memory.data["room"] == "Hostage"
 
     responses.append(agent.handle_message("7 PM").response)
-    responses.append(agent.handle_message("Riya").response)
-    responses.append(agent.handle_message("Patel").response)
+    responses.append(agent.handle_message("Riya Patel").response)
     final = agent.handle_message("9876543210")
     responses.append(final.response)
 

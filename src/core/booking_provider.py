@@ -20,6 +20,10 @@ class BookingProvider(ABC):
     def prepare_booking(self, memory: dict, chosen_slot: str) -> dict:
         raise NotImplementedError
 
+    @abstractmethod
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict:
+        raise NotImplementedError
+
 
 class SimulatorProvider(BookingProvider):
     def __init__(self) -> None:
@@ -75,6 +79,17 @@ class SimulatorProvider(BookingProvider):
             "status": "confirmed",
         }
         return res
+
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict:
+        booking = self.bookings.get(booking_id) or {}
+        is_paid = booking.get("status") == "confirmed" or booking.get("isPaid", False)
+        return {
+            "isPaid": is_paid,
+            "totals": {
+                "due": 0 if is_paid else 1000,
+                "paid": 1000 if is_paid else 0,
+            }
+        }
 
 
 class BreakoutAPIProvider(BookingProvider):
@@ -142,6 +157,9 @@ class BreakoutAPIProvider(BookingProvider):
             "customer_name": memory.get("customer_name", ""),
             "phone": memory.get("phone", ""),
         }
+
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict:
+        return self.client.check_payment_status(venue_id, booking_id)
 
     def check_availability(self, location: str, date: str, participants: int, room: str = "") -> dict:
         locations = self.get_locations()

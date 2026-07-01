@@ -76,7 +76,7 @@ class RecommendationEngine:
 
     def recommend(self, message: str, memory: dict) -> Recommendation:
         if not self.can_recommend(memory):
-            return Recommendation("", "")
+            return self.deterministic_fallback(message, memory)
 
         intent = memory.get("intent", "")
         participants = memory.get("participants", "")
@@ -101,6 +101,14 @@ class RecommendationEngine:
             ]
         )
 
+        if self._is_rejected(memory):
+            return self.deterministic_fallback(message, memory)
+        if "couple" in text:
+            return Recommendation(
+                "Murder Mystery",
+                "Murder Mystery is story-led and gives two players steady teamwork and investigation.",
+            )
+
         # 1. Puzzle dislike concern
         if "no_puzzles" in concerns or "no puzzles" in text or "puzzle" in text:
             return Recommendation(
@@ -122,13 +130,13 @@ class RecommendationEngine:
                 )
             if age is not None and 9 <= age <= 13:
                 return Recommendation(
-                    "Murder Mystery and Hostage",
-                    "They are suitable options for children aged 9 and above."
+                    "Murder Mystery",
+                    "Murder Mystery is the most approachable room for children aged 9 and above."
                 )
             # Family group (kids + adults) or older kids
             return Recommendation(
-                "Murder Mystery or Hostage",
-                "These rooms are extremely family-friendly and work well for a mix of kids and adults."
+                "Murder Mystery",
+                "Murder Mystery is the most approachable family-friendly fit for this group."
             )
 
         # 3. Event flows remain separate from single-room recommendations.
@@ -137,19 +145,34 @@ class RecommendationEngine:
                 "Corporate event coordination",
                 "Corporate groups need event-level capacity and scheduling rather than a single-room assumption.",
             )
-        if participants and isinstance(participants, int) and participants > 8:
+        if self._participant_count(participants) > 8:
             return Recommendation(
                 "Multi-room event coordination",
                 "No single escape room can hold this group, so room splitting must be confirmed before booking.",
             )
 
-        # 4. Beginner / first time
-        if "beginner" in text or "first time" in text or "first-time" in text or "never done" in text or experience_level == "beginner":
+        first_time = bool(re.search(r"\b(?:first[- ]?time|beginner|never done)\b", text)) or experience_level == "beginner"
+        thrill = bool(re.search(r"\b(?:thrill|thrilling|urgent|pressure|intense|adrenaline)\b", text))
+
+        # 4. First-time thrill seekers need a controlled step up, not the
+        # hardest room. At Whitefield this is Hostage.
+        if first_time and thrill:
+            return self._validated_room_recommendation(
+                ("Hostage", "Murder Mystery"),
+                location,
+                participants,
+                "Hostage gives first-timers a more urgent mission feel while staying suitable for a new adult group.",
+                limit=1,
+            )
+
+        # 5. Beginner / first time
+        if first_time:
             return self._validated_room_recommendation(
                 ("Murder Mystery", "Hostage"),
                 location,
                 participants,
-                "Murder Mystery is easier to start with as a classic detective investigation, while Hostage adds a bit of urgency.",
+                "Murder Mystery is beginner-friendly and gives a first time group a clear, story-led introduction to escape rooms.",
+                limit=1,
             )
 
         # 5. Challenging / Adults / Experienced
@@ -167,6 +190,7 @@ class RecommendationEngine:
                 location,
                 participants,
                 "These rooms match the selected location and supported group size.",
+                limit=1,
             )
 
         if "challenging" in text or "challenge" in text or "hard" in text or "hardest" in text:
@@ -229,13 +253,54 @@ class RecommendationEngine:
                 "It works well for friend, college, school, or office farewell groups.",
             )
 
-        # This sentinel preserves the existing qualification path. It is not
-        # presented as inventory; location-aware branches above supply the
-        # customer-facing room choices.
-        return Recommendation(
-            "Murder Mystery, Hostage, Prison Break, Classified, Undercover, or Bomb Defusal",
-            "The final choice depends on group age, group size, and challenge preference.",
+        return self.deterministic_fallback(message, memory)
+
+    @classmethod
+    def deterministic_fallback(cls, message: str, memory: dict) -> Recommendation:
+        """Return a usable deterministic recommendation for every input state."""
+        participants = cls._participant_count(memory.get("participants"))
+        location = str(memory.get("location", "")).lower()
+        text = " ".join(
+            (message.lower(), str(memory.get("experience_level", "")).lower(),
+             str(memory.get("challenge_preference", "")).lower(), str(memory.get("age_group", "")).lower())
         )
+        if memory.get("last_discussed_topic") == "locations" and not memory.get("location"):
+            return Recommendation(
+                "Koramangala",
+                "Koramangala has the broadest challenge mix for customers comparing branches.",
+            )
+        if participants > 8:
+            return Recommendation(
+                "Multi-room event coordination",
+                "This group is larger than a single room capacity, so the booking should be split across suitable rooms.",
+            )
+
+        inventory = cls.ROOM_INVENTORY.get(location, {})
+        candidates = cls.available_options(memory, limit=8)
+        rejected = {str(option) for option in memory.get("rejected_options", [])}
+        candidates = [option for option in candidates if option not in rejected]
+        if not candidates:
+            candidates = ["Hostage", "Undercover", "Murder Mystery"]
+
+        first_time = bool(re.search(r"\b(?:first[- ]?time|beginner|never done)\b", text))
+        thrill = bool(re.search(r"\b(?:thrill|thrilling|urgent|pressure|intense|adrenaline|hard|difficult|challenging|challenge)\b", text))
+        kids = bool(re.search(r"\b(?:kids?|children|child)\b", text))
+        if "couple" in text:
+            room = "Murder Mystery" if "Murder Mystery" in candidates else candidates[0]
+            return Recommendation(room, f"{room} is story-led and gives two players steady teamwork and investigation.")
+        if first_time and thrill and "Hostage" in candidates:
+            return Recommendation("Hostage", "Hostage gives first-timers an urgent, thrilling mission without requiring expert escape-room experience.")
+        if kids and "Murder Mystery" in candidates:
+            return Recommendation("Murder Mystery", "Murder Mystery is the most approachable family-friendly starting point.")
+        if thrill:
+            priority = ["Hostage", "Bomb Defusal", "Undercover", "Classified", "Missile Attack", "Murder Mystery"]
+            room = next((option for option in priority if option in candidates), candidates[0])
+            return Recommendation(room, f"{room} is the stronger pressure and teamwork fit for this group.")
+        if first_time and "Murder Mystery" in candidates:
+            return Recommendation("Murder Mystery", "Murder Mystery is beginner-friendly and a great first escape-room experience.")
+        room = "Murder Mystery" if "Murder Mystery" in candidates else candidates[0]
+        location_note = " at the selected location" if inventory else ""
+        return Recommendation(room, f"{room} is the most reliable all-round room choice{location_note}.")
 
     @classmethod
     def _validated_room_recommendation(
@@ -244,10 +309,11 @@ class RecommendationEngine:
         location: str,
         participants: int | str,
         reason: str,
+        limit: int = 2,
     ) -> Recommendation:
         inventory = cls.ROOM_INVENTORY.get(str(location).lower())
         if not inventory:
-            return Recommendation(" or ".join(candidates[:2]), reason)
+            return Recommendation(" or ".join(candidates[:limit]), reason)
         count = int(participants) if participants else 0
         valid = [
             room
@@ -259,7 +325,19 @@ class RecommendationEngine:
                 "Multi-room event coordination",
                 "No room at this location supports the current group size as a single booking.",
             )
-        return Recommendation(" or ".join(valid[:2]), reason)
+        return Recommendation(" or ".join(valid[:limit]), reason)
+
+    @staticmethod
+    def _participant_count(value: int | str | None) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _is_rejected(memory: dict) -> bool:
+        current = str(memory.get("recommended_option") or memory.get("room") or "")
+        return bool(current and current in {str(option) for option in memory.get("rejected_options", [])})
 
     @staticmethod
     def _extract_age(text: str) -> int | None:

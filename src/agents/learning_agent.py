@@ -335,8 +335,8 @@ class LearningAgent:
         metrics["last_insights"] = insights
         metrics["last_updated_at"] = datetime.now().isoformat(timespec="seconds")
 
-        report = self.build_report(score.to_dict(), sentiment.to_dict(), insights)
         self.memory.data["learning_metrics"] = metrics
+        report = self.build_report(score.to_dict(), sentiment.to_dict(), insights)
         self.memory.data["latest_metrics_report"] = report
         self.memory.save()
         return LearningSnapshot(metrics=metrics, insights=insights, report=report)

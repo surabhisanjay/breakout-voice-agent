@@ -86,6 +86,34 @@ async def forward_vapi_tool(request: Request):
         payload = {}
     return await vapi_tool(payload)
 
+@app.post("/vapi/llm/chat/completions")
+async def forward_vapi_custom_llm(request: Request):
+    from app import vapi_custom_llm
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    return await vapi_custom_llm(payload)
+
+@app.get("/whatsapp/health")
+def forward_whatsapp_health():
+    from app import whatsapp_health
+    return whatsapp_health()
+
+@app.post("/whatsapp/messages")
+async def forward_whatsapp_message(request: Request):
+    from app import WhatsAppMessageRequest, whatsapp_message
+    payload = await request.json()
+    return whatsapp_message(
+        WhatsAppMessageRequest(**payload),
+        x_whatsapp_api_key=request.headers.get("x-whatsapp-api-key", ""),
+    )
+
+@app.post("/wati/webhook")
+async def forward_wati_webhook(request: Request):
+    from app import wati_webhook
+    return await wati_webhook(request)
+
 @app.get("/vapi/events")
 def forward_vapi_events(limit: int = 50):
     from app import vapi_events
@@ -133,7 +161,7 @@ import os
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-FRONTEND_DIST = "/Users/chandrikasanjay/breakout-voice-agent/frontend/dist"
+FRONTEND_DIST = str(BASE_DIR / "frontend" / "dist")
 if os.path.exists(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 

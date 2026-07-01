@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("/Users/chandrikasanjay/breakout-voice-agent/memory/analytics.db")
+DB_PATH = Path(__file__).resolve().parents[2] / "memory" / "analytics.db"
 
 def seed_db():
     if not DB_PATH.exists():

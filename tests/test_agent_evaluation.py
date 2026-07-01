@@ -138,3 +138,34 @@ def test_learning_agent_records_evaluation_history(tmp_path: Path) -> None:
     assert "agent_eval_history" in memory.data
     assert len(memory.data["agent_eval_history"]) == 1
     assert memory.data["agent_eval_history"][0]["customer_message"] == "Hi, I want to book an escape room."
+
+
+def test_scoring_agent_csat_score_computation(tmp_path: Path) -> None:
+    from src.agents.scoring_agent import ScoringAgent
+    memory = ConversationMemory(tmp_path / "scoring.json")
+    scoring_agent = ScoringAgent(memory)
+
+    result = AgentResponse(
+        response="Got it! To suggest the perfect game, how many people are joining?",
+        intent="escape_room_inquiry",
+        next_agent="qualification_agent",
+        should_handoff=False,
+        missing_fields=["participants"]
+    )
+    sentiment = SentimentResult(
+        sentiment="excited",
+        confidence=0.9,
+        escalation_recommended=False,
+        reason="",
+        stage="sales"
+    )
+
+    score = scoring_agent.score(
+        message="Hi, I want to book an escape room.",
+        result=result,
+        sentiment=sentiment
+    )
+
+    assert score.csat_score >= 1.0 and score.csat_score <= 5.0
+    assert "csat_score" in score.to_dict()
+    assert memory.data["score_history"][-1]["csat_score"] == score.csat_score

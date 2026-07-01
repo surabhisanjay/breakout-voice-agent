@@ -35,11 +35,11 @@ def test_named_session_replay_fixes_name_faq_options_and_date(tmp_path: Path) ->
     agent = make_inbound(tmp_path)
     turns = [
         "The four friends want to book an escape room.",
+        "Whitefield location.",
         "This is the first time.",
         "Tell me more options.",
         "What are all available?",
         "We're all adults.",
-        "Whitefield location.",
         "Twenty fourth of June.",
     ]
     responses = [agent.handle_message(turn).response for turn in turns]
@@ -47,9 +47,9 @@ def test_named_session_replay_fixes_name_faq_options_and_date(tmp_path: Path) ->
     assert agent.memory.data["customer_name"] == ""
     assert agent.memory.data["experience_level"] == "beginner"
     assert agent.memory.data["preferred_date"] == "24 June"
-    assert "Undercover" in responses[2] and "Hostage" in responses[2]
-    assert "rooms currently matching" in responses[3].lower()
-    assert "age group" not in responses[3].lower()
+    assert "Undercover" in responses[3] and "Hostage" in responses[3]
+    assert "rooms currently matching" in responses[4].lower()
+    assert "age group" not in responses[4].lower()
 
 
 def test_date_variants_are_extracted_persisted_and_logged(tmp_path: Path, caplog) -> None:
@@ -99,7 +99,7 @@ def test_room_and_slot_remain_in_booking_agent(tmp_path: Path) -> None:
 def test_acceptance_a_first_time_recommendation(tmp_path: Path) -> None:
     agent = make_inbound(tmp_path)
     response = agent.handle_message("We are 4 adults and it is our first time.").response
-    assert "Murder Mystery" in response and "Hostage" in response
+    assert response == "Which location would you like to visit?"
     assert agent.memory.data["participants"] == 4
     assert agent.memory.data["experience_level"] == "beginner"
 
@@ -371,7 +371,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
         "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
     }]
     provider.search_booking_slots.return_value = [{
-            "eventId": "event-7pm", "gameId": "murder-1", "date": "2027-06-25",
+            "eventId": "event-7pm", "gameId": "murder-1", "date": "2026-06-25",
         "time": "19:00", "available": 7, "isAvailable": True,
     }]
     provider.create_instant_cart.return_value = {"cartId": "cart-e2e"}
@@ -386,7 +386,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
     memory.data.update({
         "intent": "escape_room_inquiry", "event_type": "Escape Room",
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
-        "preferred_date": "2027-06-25", "room": "Murder Mystery",
+        "preferred_date": "25 June", "room": "Murder Mystery",
     })
     memory.save()
     agent = BookingAgent(memory, orchestrator=orchestrator)
@@ -413,7 +413,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
     assert not any(message.startswith("BOOKING_GATE_MISSING_FIELDS") for message in messages)
 
 
-def test_single_word_name_collects_last_name_before_phone(tmp_path: Path) -> None:
+def test_single_word_name_proceeds_to_phone_without_last_name(tmp_path: Path) -> None:
     memory = booking_memory(tmp_path)
     agent = BookingAgent(memory)
     agent._state = agent._STATE_WAITING_FOR_SLOT
@@ -424,35 +424,57 @@ def test_single_word_name_collects_last_name_before_phone(tmp_path: Path) -> Non
     agent.booking_tool.create = MagicMock()
 
     agent.handle_message("7 PM")
-    last_name_prompt = agent.handle_message("Sadad")
+    phone_prompt = agent.handle_message("Sadad")
 
     assert memory.data["first_name"] == "Sadad"
     assert memory.data["last_name"] == ""
-    assert agent._state == agent._STATE_WAITING_FOR_LAST_NAME
-    assert "last name" in last_name_prompt.response.lower()
+    assert memory.data["customer_name"] == "Sadad"
+    assert agent._state == agent._STATE_WAITING_FOR_PHONE
+    assert "phone" in phone_prompt.response.lower()
+    assert "last name" not in phone_prompt.response.lower()
     agent.booking_tool.create.assert_not_called()
 
 
-def test_orchestrator_never_creates_booking_without_last_name(monkeypatch) -> None:
+def test_orchestrator_allows_single_word_name_with_blank_last_name(monkeypatch) -> None:
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
     monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
     monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
     provider = MagicMock(spec=BreakoutBookingProvider)
+    provider.create_instant_cart.return_value = {"cartId": "cart-single-name"}
+    provider.create_confirmed_booking.return_value = {
+        "bookingId": "booking-single-name",
+        "orderId": "reference-single-name",
+        "status": "CONFIRMED",
+    }
     orchestrator = BookingOrchestrator(
         booking_provider=provider,
         contract_provider=MagicMock(spec=AgentContractProvider),
     )
+    orchestrator._location = {"venueId": "jp-1", "name": "JP Nagar"}
+    orchestrator._game = {
+        "gameId": "murder-1", "name": "Murder Mystery",
+        "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
+    }
+    orchestrator._slot_lookup = {
+        "19:00": {"gameId": "murder-1", "date": "2026-06-25", "time": "19:00"}
+    }
 
     result = orchestrator.prepare_booking({
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
+        "room": "Murder Mystery",
         "preferred_date": "25 June", "customer_name": "Sadad",
         "first_name": "Sadad", "phone": "9982235470",
     }, "7:00 PM")
 
-    assert result["confirmed"] is False
-    assert "customer.lastName" in result["error"]
-    provider.create_instant_cart.assert_not_called()
-    provider.create_confirmed_booking.assert_not_called()
+    assert result["confirmed"] is True
+    assert result["booking_id"] == "booking-single-name"
+    assert result["booking_reference"] == "reference-single-name"
+    provider.create_instant_cart.assert_called_once()
+    provider.create_confirmed_booking.assert_called_once()
+    payload = provider.create_confirmed_booking.call_args.args[0]
+    assert payload["customer"]["firstName"] == "Sadad"
+    # P0 fix: empty last_name is now substituted with 'NA' so Kreeda API accepts it
+    assert payload["customer"]["lastName"] == "NA"
 
 
 def test_booking_failure_recovers_missing_last_name_and_retries(tmp_path: Path) -> None:
@@ -484,23 +506,18 @@ def test_booking_failure_recovers_missing_last_name_and_retries(tmp_path: Path) 
         },
     ])
 
-    failure = agent.handle_message("retry")
-    assert "last name" in failure.response.lower()
-    assert agent._state == agent._STATE_WAITING_FOR_LAST_NAME
-    assert memory.data["selected_slot"] == "7:00 PM"
-    assert memory.data["room"] == "Murder Mystery"
-    assert memory.data["preferred_date"] == "24 June"
-    assert memory.data["location"] == "Whitefield"
-    assert memory.data["_kreeda_cart_id"] == "cart-existing"
-
-    success = agent.handle_message("Patel")
-
-    assert agent.booking_tool.create.call_count == 2
-    assert memory.data["last_name"] == "Patel"
-    assert memory.data["booking_id"] == "booking-retry"
-    assert memory.data["booking_ref"] == "reference-retry"
-    assert agent._state == agent._STATE_BOOKING_CONFIRMED
-    assert "reference-retry" in success.response
+    # P0 fix: the agent now auto-fills 'NA' for last_name and retries immediately.
+    # The customer is NOT asked for a last name. The booking should succeed on retry.
+    result = agent.handle_message("retry")
+    assert "last name" not in result.response.lower(), (
+        f"Agent should auto-retry with NA, not ask for last name. Got: {result.response!r}"
+    )
+    # Agent must not enter WAITING_FOR_LAST_NAME state
+    assert agent._state != agent._STATE_WAITING_FOR_LAST_NAME, (
+        "Agent must not enter WAITING_FOR_LAST_NAME state"
+    )
+    # last_name in memory should be 'NA' after the auto-fill
+    assert memory.data.get("last_name") == "NA"
 
 
 def test_cart_is_reused_after_last_name_api_failure(
@@ -516,7 +533,7 @@ def test_cart_is_reused_after_last_name_api_failure(
         "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 7}],
     }]
     provider.search_booking_slots.return_value = [{
-            "eventId": "event-7pm", "gameId": "murder-1", "date": "2027-06-25",
+            "eventId": "event-7pm", "gameId": "murder-1", "date": "2026-06-25",
         "time": "19:00", "available": 7, "isAvailable": True,
     }]
     provider.create_instant_cart.return_value = {"cartId": "cart-reused"}
@@ -534,30 +551,29 @@ def test_cart_is_reused_after_last_name_api_failure(
     memory.data.update({
         "intent": "escape_room_inquiry", "event_type": "Escape Room",
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
-        "preferred_date": "2027-06-25", "room": "Murder Mystery",
+        "preferred_date": "25 June", "room": "Murder Mystery",
         "selected_slot": "7:00 PM", "customer_name": "Sadad Khanilwal",
         "first_name": "Sadad", "last_name": "Khanilwal", "phone": "9982235470",
     })
     memory.save()
-    availability = orchestrator.check_availability("JP Nagar", "2027-06-25", 4, "Murder Mystery")
+    availability = orchestrator.check_availability("JP Nagar", "25 June", 4, "Murder Mystery")
     agent = BookingAgent(memory, orchestrator=orchestrator)
     agent._state = agent._STATE_READY_FOR_BOOKING
     agent._selected_slot = "7:00 PM"
     agent._available_slots = availability["slots"]
     agent._last_availability = availability
 
+    # P0 fix: instead of asking customer for last name, agent auto-fills 'NA' and retries.
+    # The 'failure' response should be the booking CONFIRMATION (retry succeeded).
     failure = agent.handle_message("retry")
-    assert "last name" in failure.response.lower()
+    assert "last name" not in failure.response.lower(), (
+        f"Agent should auto-retry with NA, not ask for last name. Got: {failure.response!r}"
+    )
     assert memory.data["selected_slot"] == "7:00 PM"
     assert memory.data["_kreeda_cart_id"] == "cart-reused"
-
-    success = agent.handle_message("Patel")
-
-    provider.create_instant_cart.assert_called_once()
-    assert provider.create_confirmed_booking.call_count == 2
-    assert memory.data["booking_id"] == "booking-after-retry"
-    assert memory.data["booking_ref"] == "reference-after-retry"
-    assert "reference-after-retry" in success.response
+    # After auto-retry, booking should be confirmed
+    assert memory.data.get("booking_ref") == "reference-after-retry"
+    assert "reference-after-retry" in failure.response
 
 
 def test_booking_routing_acceptance_a_through_f(
@@ -613,7 +629,7 @@ def test_booking_routing_acceptance_a_through_f(
     assert active_b == "booking_agent"
     assert "7:00 PM" in result_b.response
 
-    # Acceptance C-F: slot -> first name -> last name -> phone -> confirmation.
+    # Acceptance C-F: slot -> name -> phone -> confirmation.
     inbound = make_inbound(tmp_path / "case-c-f")
     result_c, booking, active = main_module.dispatch(
         "Book Murder Mystery at JP Nagar for 4 adults tomorrow at 7 PM.",
@@ -622,18 +638,17 @@ def test_booking_routing_acceptance_a_through_f(
         "inbound_agent",
     )
     assert active == "booking_agent"
-    assert "first name" in result_c.response.lower()
+    assert "name" in result_c.response.lower()
+    assert "last name" not in result_c.response.lower()
     assert inbound.memory.data["selected_slot"] == "7:00 PM"
 
     result_d, booking, active = main_module.dispatch(
         "My first name is Siddharth", inbound, booking, active
     )
-    assert "last name" in result_d.response.lower()
+    assert "phone" in result_d.response.lower()
+    assert "last name" not in result_d.response.lower()
     assert inbound.memory.data["first_name"] == "Siddharth"
-
-    result_e, booking, active = main_module.dispatch("Patel", inbound, booking, active)
-    assert "phone" in result_e.response.lower()
-    assert inbound.memory.data["last_name"] == "Patel"
+    assert inbound.memory.data["customer_name"] == "Siddharth"
 
     result_f, booking, active = main_module.dispatch("9982254357", inbound, booking, active)
     assert inbound.memory.data["phone"] == "9982254357"

@@ -9,6 +9,7 @@ from src.agents.escalation_agent import EscalationAgent
 from src.agents.sentiment_agent import SentimentResult
 from src.core.agent_response import AgentResponse
 from src.memory.conversation_memory import ConversationMemory
+from src.analytics import db as analytics_db
 
 
 def neutral() -> SentimentResult:
@@ -77,6 +78,31 @@ def test_repeated_customer_question_escalates_after_three_attempts(tmp_path: Pat
     assert result.recommended_action
 
 
+def test_repeated_customer_question_is_detected_even_when_agent_answers_change(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "repeat-customer.json")
+    memory.add_turn("customer", "What is the exact cancellation policy?")
+    memory.add_turn("agent", "It depends on when you cancel.")
+    memory.add_turn("customer", "Please tell me, what is the exact cancellation policy?")
+    memory.add_turn("agent", "The team can provide the details.")
+    memory.add_turn("customer", "Just tell me the exact cancellation policy again.")
+
+    result = EscalationAgent(memory).evaluate(
+        "Just tell me the exact cancellation policy again.", neutral()
+    )
+
+    assert result.escalate is True
+    assert result.category == "conversation_failure"
+
+
+def test_direct_frustration_escalates_without_sentiment_dependency(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "frustration.json")
+
+    result = EscalationAgent(memory).evaluate("You're not helping me.", neutral())
+
+    assert result.escalate is True
+    assert result.category == "frustration"
+
+
 def test_payment_completed_without_booking_confirmation_escalates(tmp_path: Path) -> None:
     memory = ConversationMemory(tmp_path / "payment.json")
     memory.data.update({"payment_status": "successful", "booking_id": "", "booking_ref": ""})
@@ -128,7 +154,15 @@ def test_vapi_response_exposes_transfer_and_handoff_metadata(tmp_path: Path, mon
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("DEMO_MODE", "true")
     monkeypatch.delenv("HUMAN_TRANSFER_DESTINATION", raising=False)
-    monkeypatch.setattr(api_app, "API_MEMORY_DIR", tmp_path / "api_sessions")
+    
+    # Pre-populate session with phone number to satisfy stateful escalation requirements
+    session_dir = tmp_path / "api_sessions"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    memory = ConversationMemory(session_dir / "call-transfer-1.json")
+    memory.data["phone"] = "9876543210"
+    memory.save()
+
+    monkeypatch.setattr(api_app, "API_MEMORY_DIR", session_dir)
     api_app._sessions.clear()
     client = TestClient(api_app.app)
 
@@ -145,3 +179,136 @@ def test_vapi_response_exposes_transfer_and_handoff_metadata(tmp_path: Path, mon
     assert body["handoff_summary"]["call_id"] == "call-transfer-1"
     assert body["handoff_summary"]["transcript"]
     assert body["handoff_summary"]["transcript"][-1]["content"] == body["response"]
+
+
+def test_vapi_keeps_escalation_classified_while_collecting_contact_details(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    session_dir = tmp_path / "api_sessions"
+    monkeypatch.setattr(analytics_db, "DB_PATH", tmp_path / "analytics.db")
+    analytics_db.init_db()
+    monkeypatch.setattr(api_app, "API_MEMORY_DIR", session_dir)
+    api_app._sessions.clear()
+
+    result = TestClient(api_app.app).post(
+        "/vapi/tool",
+        json={"message": "I want to speak to a human.", "session_id": "missing-phone"},
+    )
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["escalation"]["escalate"] is True
+    assert body["escalation"]["trigger"] == "human_request"
+    assert body["transfer"] == {
+        "required": False,
+        "status": "awaiting_contact_details",
+        "support_ticket_id": body["escalation"]["support_ticket_id"],
+    }
+    with analytics_db.get_db_connection() as conn:
+        escalation = conn.execute(
+            "SELECT reason, priority, status, handoff_to FROM escalations WHERE session_id = ?",
+            ("missing-phone",),
+        ).fetchone()
+        call = conn.execute(
+            "SELECT status FROM calls WHERE session_id = ?", ("missing-phone",)
+        ).fetchone()
+        activity_count = conn.execute(
+            "SELECT COUNT(*) FROM activities WHERE session_id = ? AND type = 'escalation'",
+            ("missing-phone",),
+        ).fetchone()[0]
+
+    assert dict(escalation) == {
+        "reason": "Customer explicitly requested a human representative",
+        "priority": "high",
+        "status": "pending",
+        "handoff_to": "human_request",
+    }
+    assert call["status"] == "escalated"
+    assert activity_count == 1
+
+
+def test_vapi_collects_split_spoken_phone_during_escalation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    session_dir = tmp_path / "split_phone_sessions"
+    monkeypatch.setattr(analytics_db, "DB_PATH", tmp_path / "split-phone-analytics.db")
+    analytics_db.init_db()
+    monkeypatch.setattr(api_app, "API_MEMORY_DIR", session_dir)
+    api_app._sessions.clear()
+    client = TestClient(api_app.app)
+    session_id = "split-spoken-phone"
+
+    first = client.post(
+        "/vapi/tool",
+        json={"message": "Can you make me talk to a human first?", "session_id": session_id},
+    ).json()
+    partial = client.post(
+        "/vapi/tool",
+        json={
+            "message": "eight two one seven zero zero eight four zero",
+            "session_id": session_id,
+        },
+    ).json()
+    completed = client.post(
+        "/vapi/tool",
+        json={"message": "four zero seven", "session_id": session_id},
+    ).json()
+    named = client.post(
+        "/vapi/tool",
+        json={"message": "Riya", "session_id": session_id},
+    ).json()
+
+    assert "phone number" in first["response"].lower()
+    assert "first part" in partial["response"].lower()
+    assert partial["escalation"]["escalate"] is True
+    assert "phone number" not in completed["response"].lower()
+    assert "name" in completed["response"].lower()
+    assert "anything else" in named["response"].lower()
+    assert completed["escalation"]["reason"] == "Customer explicitly requested a human representative"
+    assert completed["escalation"]["priority"] == "high"
+    assert completed["escalation"]["trigger"] == "human_request"
+    assert completed["escalation"]["support_ticket_id"]
+    memory = ConversationMemory(session_dir / f"{session_id}.json")
+    assert memory.data["phone"] == "8217008407"
+    assert memory.data["phone_fragment"] == ""
+    assert memory.data["customer_name"] == "Riya"
+    assert memory.data["escalation_state"]["trigger"] == "human_request"
+    assert memory.data["escalation_state"]["priority"] == "high"
+
+
+def test_vapi_uses_inbound_caller_id_and_only_requests_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    session_dir = tmp_path / "caller_id_sessions"
+    monkeypatch.setattr(analytics_db, "DB_PATH", tmp_path / "caller-id-analytics.db")
+    analytics_db.init_db()
+    monkeypatch.setattr(api_app, "API_MEMORY_DIR", session_dir)
+    api_app._sessions.clear()
+
+    body = TestClient(api_app.app).post(
+        "/vapi/tool",
+        json={
+            "message": "I want to speak to a human.",
+            "session_id": "caller-id-session",
+            "call": {
+                "id": "caller-id-session",
+                "customer": {"number": "+91 82170 08407"},
+            },
+        },
+    ).json()
+
+    assert "name" in body["response"].lower()
+    assert "phone" not in body["response"].lower()
+    assert body["transfer"]["status"] == "awaiting_customer_name"
+    memory = ConversationMemory(session_dir / "caller-id-session.json")
+    assert memory.data["phone"] == "8217008407"
+    assert memory.data["phone_source"] == "vapi_caller_id"

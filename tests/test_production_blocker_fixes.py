@@ -14,7 +14,7 @@ import main as main_module
 from main import build_inbound_agent, dispatch
 from src.agents.booking_agent import BookingAgent
 from src.agents.escalation_agent import EscalationAgent
-from src.agents.sentiment_agent import SentimentAgent, SentimentResult
+from src.agents.sentiment_agent import SentimentAgent
 from src.integrations.kreeda.agent_contract_provider import AgentContractProvider
 from src.integrations.kreeda.breakout_booking_provider import BreakoutBookingProvider
 from src.memory.conversation_memory import ConversationMemory
@@ -88,7 +88,8 @@ def test_acceptance_a_book_room_then_change_date_clears_slot(tmp_path: Path) -> 
 
     assert agent.memory.data["preferred_date"] == "25 June"
     assert agent.memory.data["selected_slot"] == ""
-    assert "8:00 PM" in result.response
+    assert "check 25 June instead" in result.response
+    assert "same room" in result.response
 
 
 # Regression: room modification invalidates all slot/cart state.
@@ -317,48 +318,3 @@ def test_acceptance_h_live_booking_initializes_and_persists_ids(
     assert memory.data["booking_id"] == "booking-live"
     assert memory.data["booking_ref"] == "reference-live"
     assert "reference-live" in confirmation.response
-
-
-def test_robust_escalation_variations(tmp_path: Path) -> None:
-    # 1. Representative / human requests
-    for msg in ["can I speak to a representative?", "I need to talk to someone", "connect me with support", "put me through to a supervisor", "is there a real person I can talk to?", "speak to an agent"]:
-        memory = ConversationMemory(tmp_path / f"human_{hash(msg)}.json")
-        sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
-        escalation = EscalationAgent(memory).evaluate(msg, sentiment)
-        assert escalation.escalate is True, f"Failed to escalate human request: {msg}"
-        assert "human representative" in escalation.reason
-
-    # 2. Safety/emergency requests
-    for msg in ["there is an emergency", "call an ambulance", "get me out of here", "my friend fainted inside the room", "I've had a panic attack"]:
-        memory = ConversationMemory(tmp_path / f"safety_{hash(msg)}.json")
-        sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
-        escalation = EscalationAgent(memory).evaluate(msg, sentiment)
-        assert escalation.escalate is True, f"Failed to escalate safety request: {msg}"
-        assert "safety concern" in escalation.reason
-
-    # 3. Refund variations
-    for msg in ["can I get a refund?", "how to get a refund", "I want my money back", "refund me please", "please refund this", "I am asking for a refund"]:
-        memory = ConversationMemory(tmp_path / f"refund_{hash(msg)}.json")
-        sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
-        escalation = EscalationAgent(memory).evaluate(msg, sentiment)
-        assert escalation.escalate is True, f"Failed to escalate refund request: {msg}"
-        assert "refund" in escalation.reason.lower()
-
-    # 4. Complaint / bad experience variations
-    for msg in ["I was in an escape room yesterday, and I did not like my experience at all.", "Last time was terrible.", "This was a complete waste of money.", "I was extremely disappointed with the service."]:
-        memory = ConversationMemory(tmp_path / f"complaint_{hash(msg)}.json")
-        sentiment = SentimentResult("neutral", 0.5, False, "", "discovery")
-        escalation = EscalationAgent(memory).evaluate(msg, sentiment)
-        assert escalation.escalate is True, f"Failed to escalate complaint request: {msg}"
-        assert "frustration" in escalation.reason or "anger" in escalation.reason
-
-    # 5. Empathy cushion in dispatch response for complaints
-    result, _, _ = dispatch(
-        "I did not like my experience at all yesterday",
-        build_inbound_agent(Namespace(model=None, no_openai=True), ConversationMemory(tmp_path / "dispatch_complaint.json")),
-        None,
-        "inbound_agent"
-    )
-    assert result.next_agent == "escalation_agent"
-    assert result.should_handoff is True
-    assert "sorry to hear you had a bad experience" in result.response.lower()

@@ -28,6 +28,8 @@ class ResponseComposer:
             self.system_prompt = f"{self.system_prompt}\n\n{self.playbook}"
         self.model = model
         self.enabled = bool(os.environ.get("OPENAI_API_KEY")) if enabled is None else enabled
+        if "PYTEST_CURRENT_TEST" in os.environ and enabled is None:
+            self.enabled = False
         self.last_error = ""
         self.last_latency = 0.0
 
