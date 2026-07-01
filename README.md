@@ -1,430 +1,99 @@
-# Breakout Inbound Agent MVP
+# Breakout Escape Rooms - AI Voice Agent Platform MVP
 
-OpenAI-powered production-style MVP for Agent #1 in a multi-agent AI call center for Breakout Escape Rooms.
+An advanced, production-hardened multi-agent cooperative AI voice platform powering the inbound customer center for Breakout Escape Rooms. This platform handles intents ranging from booking qualification, live game recommendation, payment processing/status polling via the Kreeda gateway, and graceful human handoff with multi-turn customer notes collection.
 
-This is not a chatbot. It is an inbound intake agent that greets customers, detects intent, answers basic company questions, recommends suitable rooms or packages, collects missing details, generates a structured handoff summary, and routes to the next agent.
+---
 
-## Stack
+## Agent Architecture Overview
 
-- Python
-- OpenAI Responses API
-- GPT-4.1 mini by default for customer-facing response composition
-- Whisper for speech-to-text
-- pyttsx3 for text-to-speech
-- No Claude APIs
+Our system uses a multi-agent cooperative architecture where agents coordinate statefully through a centralized conversation memory layer.
 
-## Project Structure
-
-```text
-Breakout-Agent/
-├── knowledge/
-│   ├── faq.txt
-│   ├── games.txt
-│   ├── events.txt
-│   └── policies.txt
-├── prompts/
-│   ├── inbound_prompt.txt
-│   ├── breakout_personality_prompt.txt
-│   └── conversation_playbook.txt
-├── memory/
-│   └── session.json
-├── src/
-│   ├── knowledge_loader.py
-│   ├── intent_detector.py
-│   ├── recommendation_engine.py
-│   ├── response_composer.py
-│   ├── conversation_modes.py
-│   ├── booking_provider.py
-│   ├── integrations/
-│   │   └── breakout_api.py
-│   ├── conversation_memory.py
-│   ├── handoff_generator.py
-│   ├── voice_input.py
-│   ├── voice_output.py
-│   ├── router.py
-│   └── inbound_agent.py
-├── main.py
-├── requirements.txt
-└── README.md
+```mermaid
+graph TD
+    User([Customer Utterance]) --> InboundAgent[Inbound Agent]
+    InboundAgent --> CM[Conversation Manager]
+    CM --> Router{Router}
+    Router -->|If Qualification Needed| QA[Qualification Agent]
+    Router -->|If Ready to Book| BA[Booking Agent]
+    
+    BA --> AT[Availability Tool]
+    BA --> BT[Booking Tool]
+    
+    InboundAgent --> RC[Response Composer]
+    BA --> RC
+    RC --> LLM[OpenAI / LLM API]
+    RC --> AgentResponse([Spoken Turn Response])
 ```
 
-## Responsibilities
+1. **Inbound Agent** (`src/agents/inbound_agent.py`): Primary front desk dispatcher, handles intent detection, conversational interruptions, rules explanations, and rescue comments.
+2. **Qualification Agent** (`src/agents/qualification_agent.py`): Extracts and validates booking fields (location, date, time, group size, age group) before slot booking.
+3. **Booking Agent** (`src/agents/booking_agent.py`): Queries live slots using `AvailabilityTool` and coordinates the final checkout link creation.
+4. **Escalation Agent** (`src/agents/escalation_agent.py`): Tracks conversation safety, loop-detection, and structures human-handoff details.
+5. **Response Composer** (`src/response_composer.py`): Enforces the Breakout voice (brief, conversational, under-20-word guidelines).
 
-The inbound agent can:
+---
 
-- Greet customers.
-- Understand customer intent.
-- Answer basic company questions.
-- Explain Breakout services.
-- Recommend suitable rooms or packages.
-- Collect name, phone, location, participants, event type, and preferred date.
-- Store conversation memory.
-- Generate a structured handoff summary.
-- Route to the next agent.
+## Key Production Hardening Features
 
-The inbound agent must not:
+### 1. Payment Processing & Polling
+* **Hosted Checkout**: Creates a payment link appending `?pr=true` to force hosted checkout with the Pay button.
+* **Status Polling**: The backend and voice flows poll `check_payment_status` using the `bookingId` from Kreeda every 15–30s to verify live transaction success while the user remains on the line.
 
-- Create bookings.
-- Process payments.
-- Approve refunds.
-- Confirm availability.
-- Resolve complaints.
-- Make business decisions.
+### 2. Human Escalation & Notes Gathering
+* **Stateful Notes Gathering**: If a human transfer is triggered (e.g., safety, complaint, or repeated loops), the agent does not immediately sever the call. It asks: *"Is there anything else you'd like our team to know before they contact you?"*, saves the notes, creates a handoff ticket, and then gracefully bids farewell.
+* **ASR Word Normalization**: Text transcriptions of phone numbers (e.g. `"eight two one seven zero zero eight four two zero seven"`) are normalized to standard digit formats (`82170084207`) including support for `"zero"` and `"oh"` values to prevent phone parsing failures.
+* **Loop Protection**: Tracks consecutive phone requests when unresolved queries occur; if the customer ignores requests 3 times, a `"Repeated conversation loop detected"` escalation is triggered.
 
-## Supported Intents
+---
 
-- `escape_room_inquiry`
-- `birthday_party`
-- `bachelor_party`
-- `farewell_party`
-- `couple_event`
-- `corporate_event`
-- `virtual_event`
-- `cancellation_request`
-- `general_faq`
+## Setup & Installation
 
-## Setup
-
-Create a `.env` file with your OpenAI API key. You can optionally override the default model:
+### Environment Configuration
+Create a `.env` file in the root directory:
 
 ```dotenv
-OPENAI_API_KEY=
+OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4.1-mini
-BOOKING_API_KEY=
+VAPI_API_KEY=your_vapi_api_key
+VAPI_ASSISTANT_ID=your_vapi_assistant_id
+VAPI_TOOL_ID=your_vapi_tool_id
+BOOKING_API_KEY=your_kreeda_api_key
 BOOKING_BASE_URL=https://bs.kreeda.icu
+WHATSAPP_ENABLED=true
+WHATSAPP_PROVIDER=wati
+WHATSAPP_ACCESS_TOKEN=your_wati_token
+WHATSAPP_API_ENDPOINT=https://live-mt-server.wati.io/1070847
 ```
 
-Create a virtual environment and install dependencies:
-
-```bash
-cd Breakout-Agent
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Some systems need PortAudio for microphone input:
-
-```bash
-brew install portaudio
-```
-
-## Run in Text Mode
-
-```bash
-python main.py --debug
-```
-
-Use deterministic fallback responses without calling OpenAI:
-
-```bash
-python main.py --no-openai --debug
-```
-
-Reset memory at startup:
-
-```bash
-python main.py --reset-memory --debug
-```
-
-Inside the app:
-
-- `/handoff` prints the current structured handoff JSON.
-- `/reset` clears the session.
-- `/quit` exits.
-
-## Run in Voice Mode
-
-```bash
-python main.py --voice
-```
-
-Voice mode uses Whisper `small`, forces English transcription, and listens with voice activity detection. It starts recording when speech is detected, stops after about 0.8 seconds of silence, and then speaks the final clean response through pyttsx3. The 12-second setting is only a maximum turn length, not a fixed wait.
-
-Supported stop words: `quit`, `goodbye`, `exit`, `stop`, and `bye`.
-
-The agent listens through the microphone, transcribes with Whisper, responds through the inbound agent, and speaks back through pyttsx3. Customer-facing speech contains only the final natural response.
-
-Every customer turn is stored as JSON in `logs/conversations/`, including timestamp, customer utterance, agent response, intent, collected context, route, and handoff summary.
-
-For development debugging only:
-
-```bash
-python main.py --voice --debug
-```
-
-## Uploaded Knowledge Source
-
-The runtime knowledge files in `knowledge/` are generated from the uploaded Breakout source documents:
-
-- `Escape rooms, Parties and Corporates detail.xlsx`
-- `Breakout FAQs.docx`
-- `Breakout Details - Sheet1.pdf`
-
-The agent treats those generated files as the only source of truth. If a question cannot be answered from retrieved source context, it responds:
-
-```text
-I don't currently have that information, but I can connect you with the appropriate team.
-```
-
-The helper extractor is available at:
-
-```bash
-python ../work/extract_breakout_knowledge.py
-```
-
-## Retrieval
-
-Before calling OpenAI, the agent performs lightweight keyword retrieval over `faq.txt`, `games.txt`, `events.txt`, and `policies.txt`, then injects only the relevant sections into the prompt. The full knowledge base is not sent to the model.
-
-## Personality And Response Composition
-
-Intent detection, slot filling, qualification, routing, recommendations, and booking decisions remain deterministic. The approved response and structured state are passed to the OpenAI Response Composer, which applies the Breakout hospitality voice from `prompts/breakout_personality_prompt.txt`. If OpenAI is unavailable, times out, or returns an empty response, the approved deterministic response is used immediately.
-
-Conversation wording is selected using five modes: `sales`, `recommendation`, `booking`, `rescue`, and `faq`.
-
-The transcript-derived conversation playbook operationalizes acknowledgment, recommendation, reassurance, objection handling, policy explanation, light humor, qualification, and closing patterns. The composer uses it together with the personality prompt on every dynamic Inbound Agent and Booking Agent business response.
-
-Voice startup greetings, unclear-transcript clarification, exit farewells, and local QA commands remain deterministic so they are immediate and reliable.
-
-## Booking Provider
-
-The Booking Agent uses a provider abstraction without changing its state machine:
-
-- `SimulatorProvider` uses the existing local availability and booking tools.
-- `BreakoutAPIProvider` implements the documented locations, games, slots, and prepare-booking endpoints.
-
-When `BOOKING_API_KEY` and `BOOKING_BASE_URL` are configured, the real provider is selected. Otherwise the application falls back to the simulator. A prepared API booking is not described as confirmed until checkout is completed.
-
-## Tests
-
-Run the automated test suite:
-
-```bash
-python -m pytest tests -q
-```
-
-The demo-readiness suite covers first-time players, couples, families, corporate groups, late arrivals, briefings, unsuccessful escapes, topic interruptions, recommendation-first behavior, compound questions, booking mode, and session isolation.
-
-Voice architecture:
-
-```text
-Customer Voice
-↓
-Whisper
-↓
-Text
-↓
-Inbound Agent
-↓
-Knowledge Base
-↓
-Response
-↓
-pyttsx3
-↓
-Voice
-```
-
-## Sample Conversations
-
-### FAQ
-
-Customer:
-
-```text
-What is an escape room?
-```
-
-Agent:
-
-```text
-Sure. An escape room is a live adventure game where your group solves clues and puzzles to complete a mission within about 60 minutes.
-```
-
-### Kids Recommendation
-
-Customer:
-
-```text
-We have 6 kids aged 10.
-```
-
-Agent:
-
-```text
-For 6 kids aged 10, I'd recommend Murder Mystery or Hostage. Murder Mystery focuses on investigation and clue solving, while Hostage adds more urgency with a rescue-style story. Which location are you planning to visit?
-```
-
-### Adult Challenge Recommendation
-
-Customer:
-
-```text
-We are adults looking for a challenging room.
-```
-
-Agent:
-
-```text
-For adults looking for a challenge, I'd recommend Classified or Bomb Defusal. Classified is investigation-led, while Bomb Defusal is more intense and time-pressured. Which location are you planning to visit?
-```
-
-### Memory
-
-Customer:
-
-```text
-My name is Rahul.
-```
-
-Customer:
-
-```text
-We want a birthday party.
-```
-
-Customer:
-
-```text
-Whitefield.
-```
-
-The agent stores the values in `memory/session.json` and uses them in future turns.
-
-### Handoff
-
-When enough information is collected, run:
-
-```text
-/handoff
-```
-
-Example output:
-
-```json
-{
-  "customer_name": "Rahul",
-  "intent": "birthday_party",
-  "location": "Whitefield",
-  "participants": 35,
-  "event_type": "Birthday Party",
-  "sentiment": "neutral",
-  "recommended_option": "Birthday Party Package",
-  "summary": "Customer name is Rahul. Intent is birthday_party. Customer is interested in Birthday Party. Preferred location is Whitefield. Group size is approximately 35. Recommended option: Birthday Party Package."
-}
-```
-
-## Next-Agent Routing
-
-Routing is handled by `src/router.py`:
-
-- Birthday party -> `birthday_booking_agent`
-- Corporate event -> `corporate_events_agent`
-- Virtual event -> `virtual_events_agent`
-- Cancellation or refund -> `refunds_or_cancellations_agent`
-- Escape room inquiry -> `booking_agent`
-- General FAQ -> stay with `inbound_agent`
-
-The router avoids handoff until most required intake fields are collected.
-
-## FastAPI Adapter
-
-The HTTP API is a thin wrapper around the existing conversation system. Terminal and voice modes in `main.py` continue to work unchanged.
-
-Start the API locally:
-
-```bash
-uvicorn app:app --reload
-```
-
-Health check:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Chat request:
-
-```bash
-curl -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"demo-1","message":"We are six adults visiting Whitefield."}'
-```
-
-Reset a session:
-
-```bash
-curl -X POST http://127.0.0.1:8000/reset \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"demo-1"}'
-```
-
-Optional memory inspection:
-
-```bash
-curl http://127.0.0.1:8000/memory/demo-1
-```
-
-Each `session_id` gets its own persisted memory file under `memory/api_sessions/`.
-
-## Live Kreeda Booking Verification
-
-Set the booking credentials in `.env`:
-
-```bash
-BOOKING_BASE_URL=https://bs.kreeda.icu
-BOOKING_API_KEY=your-real-key
-BOOKING_PROVIDER=auto
-```
-
-Use `BOOKING_PROVIDER=simulator` only when you explicitly want offline simulator bookings.
-
-Start the FastAPI backend:
-
-```bash
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-Expected startup log:
-
-```text
-BOOKING_PROVIDER=live-configured
-```
-
-Expected booking logs during a live booking:
-
-```text
-Kreeda provider initialized successfully
-Kreeda availability request
-Kreeda availability response
-Kreeda booking request
-Kreeda booking response
-```
-
-If live mode falls back, logs will include:
-
-```text
-Simulator fallback reason: ...
-```
-
-Test booking scenario:
-
-1. Start a new Vapi or API session.
-2. Ask to book an escape room.
-3. Provide group size, age group, location, date, time, name, and phone.
-4. Select one of the available slots returned by the agent.
-5. Confirm that the response contains a checkout or booking reference returned by Kreeda.
-
-Confirm in Kreeda:
-
-1. Open the Kreeda dashboard.
-2. Search by the customer phone number or booking reference.
-3. Verify location, date, slot time, room/game, and customer name match the test conversation.
-
-## Notes for Production Hardening
-
-- Replace regex extraction with validated forms or a local NLU model if needed.
-- Add branch-specific opening hours, parking, pricing, and game capacity to the knowledge files.
-- Add a message queue or local event bus for the full 30-agent architecture.
-- Add unit tests around intent detection, memory extraction, and routing before deploying.
+### Quick Start
+1. Initialize the environment and install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Run the unit test suite (validates 1,459 production rules and regression tests):
+   ```bash
+   PYTHONPATH=. pytest tests/
+   ```
+3. Launch local services and tunnel using ngrok:
+   ```bash
+   ./deploy.sh
+   ```
+
+---
+
+## Deployment Script (deploy.sh)
+
+The `./deploy.sh` script automates the complete developer environment setup:
+1. **Frontend Assets**: Re-builds all Vite React frontend components into production bundles.
+2. **Process Hardening**: Port `8010` is checked, and any previous running servers or dead ngrok processes are cleanly terminated.
+3. **Uvicorn Server**: Spawns the FastAPI backend server on port `8010` (`/tmp/uvicorn.log`).
+4. **Ngrok Tunneling**: Sets up a public HTTPS tunnel mapping to port `8010` (`/tmp/ngrok.log`).
+5. **Vapi Webhook Auto-Patching**: Reads the active Ngrok public URL and programmatically updates the configured Vapi Assistant (`VAPI_ASSISTANT_ID`) and Vapi Tool (`VAPI_TOOL_ID`) using Vapi's REST APIs. If Vapi credentials are not provided or are expired, it outputs a non-blocking warning and outputs the public URL for manual updates.
+
+---
+
+## Live Integration (Vapi)
+
+Ensure your Vapi Dashboard is pointing to your active ngrok tunnel (if the automated patch script skipped it):
+* **Assistant Webhook**: `https://<your-ngrok-subdomain>.ngrok-free.dev/vapi/webhook`
+* **Tool Webhook**: `https://<your-ngrok-subdomain>.ngrok-free.dev/vapi/tool`
