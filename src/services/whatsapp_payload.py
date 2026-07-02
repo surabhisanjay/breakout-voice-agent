@@ -13,9 +13,10 @@ def build_wati_booking_payload(memory: dict[str, Any], booking_result: dict[str,
     )
     payment_link = str(
         booking_result.get("payment_url")
-        or booking_result.get("order_url")
+        or booking_result.get("paymentUrl")
+        or memory.get("payment_url")
+        or memory.get("paymentUrl")
         or memory.get("payment_link")
-        or (f"https://payments.breakout.in/pay/{booking_id}" if booking_id else "")
     )
     status = str(booking_result.get("status") or "").lower()
     if not status:

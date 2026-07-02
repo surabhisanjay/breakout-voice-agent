@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..memory.conversation_memory import ConversationMemory
+from ..services.conversation_resolution import ConversationResolver
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ class QualificationResult:
 
 class QualificationAgent:
     REQUIRED_BY_INTENT = {
-        "escape_room_inquiry": ["event_type", "participants", "age_group", "location"],
+        "escape_room_inquiry": ["event_type", "participants", "location"],
         "birthday_party": [
             "event_type", "participants", "location", "preferred_date",
             "age_group", "food_required", "budget_range",
@@ -80,11 +81,15 @@ class QualificationAgent:
 
     def __init__(self, memory: ConversationMemory):
         self.memory = memory
+        self.resolver = ConversationResolver()
         # Tracks which field we explicitly asked for on the previous turn.
         # Validation only applies when _waiting_for matches the expected field.
         self._waiting_for: str = ""
 
     def next_missing_field(self, intent: str) -> str:
+        resolution = self.resolver.resolve(self.memory.data)
+        if resolution.next_required_fact:
+            return resolution.next_required_fact
         required = self.REQUIRED_BY_INTENT.get(intent, [])
         missing = [field for field in required if not self._has_value(field)]
         return missing[0] if missing else ""
@@ -93,8 +98,15 @@ class QualificationAgent:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
         required = self.REQUIRED_BY_INTENT.get(active_intent, [])
         missing = [field for field in required if not self._has_value(field)]
+        resolution = self.resolver.resolve(self.memory.data)
+        if resolution.next_required_fact and resolution.next_required_fact not in missing:
+            missing.insert(0, resolution.next_required_fact)
+        elif resolution.next_required_fact in missing:
+            missing = [resolution.next_required_fact] + [
+                field for field in missing if field != resolution.next_required_fact
+            ]
         if missing:
-            next_question = self.QUESTIONS.get(missing[0], "")
+            next_question = self._question_for_field(missing[0])
         else:
             next_question = "Qualification complete."
 
@@ -106,6 +118,15 @@ class QualificationAgent:
             summary=self._summary(not missing),
             response=response,
         )
+
+    def _question_for_field(self, field: str) -> str:
+        if field == "time_preference":
+            return "What time works best: morning, afternoon, evening, or a specific time?"
+        if field == "selected_slot":
+            return "Which available slot would you prefer?"
+        if field == "experience_level":
+            return "First time playing, or have you done escape rooms before?"
+        return self.QUESTIONS.get(field, "")
 
     def update_and_qualify(self, message: str, intent: str | None = None) -> QualificationResult:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
@@ -377,9 +398,13 @@ class QualificationAgent:
             "yes", "no", "okay", "ok", "sure", "hi", "hello", "hey",
             "thanks", "thank", "great", "perfect", "good", "please", "sorry",
             "we", "i", "me", "my", "your", "the", "and", "see", "you", "then",
-            "challenging", "chllangeing", "challenge", "relaxed", "adults", "kids", "hostage",
+            "something", "hard", "harder", "difficult", "challenging", "chllangeing",
+            "challenge", "intense", "thrilling", "scary", "easy", "easier",
+            "relaxed", "adults", "kids", "hostage",
             "murder", "mystery", "classified", "bomb", "defusal", "prison", "break", "undercover",
-            "escape", "room", "rooms", "game", "games"
+            "escape", "room", "rooms", "game", "games",
+            "around", "about", "morning", "afternoon", "evening", "night", "noon",
+            "today", "tomorrow", "friday", "saturday", "sunday", "weekday", "weekend",
         }
         clean = re.sub(r"[^a-zA-Z\s]", "", text).strip()
         words = clean.split()

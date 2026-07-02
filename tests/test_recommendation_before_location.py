@@ -48,14 +48,11 @@ def test_scenario_a_recommendation_before_location(tmp_path: Path) -> None:
     assert "adult" in r2.lower() or "kids" in r2.lower() or "age" in r2.lower() or "mix" in r2.lower(), (
         f"Expected age group question, got: {r2}"
     )
-    # Must NOT ask for location yet
     assert "koramangala" not in r2.lower() and "whitefield" not in r2.lower() and "jp nagar" not in r2.lower(), (
         f"Location asked too early (before recommendation): {r2}"
     )
 
-    # Turn 3: adults
     r3 = agent.handle_message("We are all adults.").response
-
     assert r3 == "Which location would you like to visit?"
 
 

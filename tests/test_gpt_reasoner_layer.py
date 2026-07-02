@@ -104,11 +104,11 @@ def test_reasoner_voice_repair_repeats_pending_question_without_advancing(tmp_pa
         ReasonerDecision(action="repeat_previous_question", confidence=0.95),
     )
     first = agent.handle_message("We are a group of seven friends.")
-    assert "age group" in first.response.lower()
+    assert "location" in first.response.lower()
 
     response = agent.handle_message("what?").response
 
-    assert "age group" in response.lower()
+    assert "location" in response.lower()
     assert agent.memory.data["participants"] == 7
     assert agent.memory.data["age_group"] == ""
 

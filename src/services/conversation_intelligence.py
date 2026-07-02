@@ -153,10 +153,17 @@ class ConversationIntelligenceLayer:
         if exp == "beginner" and not self.memory.data.get("discussed_options") and ("recommend" in lowered or "first time" in lowered or "suggest" in lowered or "never" in lowered or "none of us" in lowered):
             room_keywords = ("murder", "hostage", "wizarding", "pharaoh", "forest", "classified", "undercover", "prison", "bomb")
             if not any(room in lowered for room in room_keywords):
+                if self.memory.data.get("participants") and not self.memory.data.get("age_group"):
+                    follow_up = "What age group are the players: adults, kids, or a mix?"
+                elif not self.memory.data.get("participants"):
+                    follow_up = "How many people are joining?"
+                elif not self.memory.data.get("location"):
+                    follow_up = "Which location would you like to visit?"
+                else:
+                    follow_up = "Would you like me to check availability?"
                 return (
                     "No worries. I'd probably start with Murder Mystery for a first visit. "
-                    "Hostage is the more urgent option if the group wants extra pressure. "
-                    "How many people are joining?"
+                    f"Hostage is the more urgent option if the group wants extra pressure. {follow_up}"
                 )
 
         return None

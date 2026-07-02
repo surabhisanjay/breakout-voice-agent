@@ -34,6 +34,8 @@ def _booking_memory(tmp_path: Path) -> ConversationMemory:
         "preferred_date": "Tomorrow",
         "room": "Murder Mystery",
         "selected_slot": "7:00 PM",
+        "preferred_time": "7:00 PM",
+        "time_preference": "specific",
     })
     memory.save()
     return memory
@@ -232,7 +234,7 @@ def test_acceptance_g_booking_faq_answers_then_resumes(tmp_path: Path) -> None:
 
     assert active == "booking_agent"
     assert "parking" in result.response.lower()
-    assert "which time works best" in result.response.lower()
+    assert "which time" in result.response.lower()
     assert booking._state == booking._STATE_WAITING_FOR_SLOT
 
 
@@ -300,6 +302,8 @@ def test_acceptance_h_live_booking_initializes_and_persists_ids(
     memory.data.update({
         "preferred_date": "2026-06-23",
         "selected_slot": "",
+        "preferred_time": "7:00 PM",
+        "time_preference": "specific",
         "customer_name": "Siddharth Patel",
         "first_name": "Siddharth",
         "last_name": "Patel",

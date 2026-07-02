@@ -112,6 +112,100 @@ class WatiClient:
     def configured(self) -> bool:
         return self.config is not None
 
+    def send_session_message(
+        self,
+        phone: str,
+        message_text: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> WatiSendResult:
+        context = context or {}
+        if self.config is None:
+            logger.info("WATI_REPLY_SKIPPED reason=missing_configuration")
+            return WatiSendResult(attempted=False, sent=False, reason="missing_configuration")
+
+        normalized_phone = self._normalise_phone(phone)
+        if not normalized_phone:
+            logger.warning("WATI_REPLY_SKIPPED reason=missing_phone context=%s", self._log_value(context))
+            return WatiSendResult(attempted=False, sent=False, reason="missing_phone")
+        clean_text = str(message_text or "").strip()
+        if not clean_text:
+            logger.warning(
+                "WATI_REPLY_SKIPPED reason=missing_message phone=%s context=%s",
+                self._mask_phone(normalized_phone),
+                self._log_value(context),
+            )
+            return WatiSendResult(attempted=False, sent=False, reason="missing_message")
+
+        url = self._send_url(normalized_phone, clean_text)
+        headers = {
+            "Authorization": f"Bearer {self.config.access_token}",
+            "Accept": "application/json",
+        }
+        last_error = ""
+        last_status: int | None = None
+        last_response: dict[str, Any] | str | None = None
+        for attempt in range(1, self.config.max_attempts + 1):
+            try:
+                logger.info(
+                    "WATI_REPLY_ATTEMPT attempt=%s phone=%s endpoint=%s context=%s",
+                    attempt,
+                    self._mask_phone(normalized_phone),
+                    self._safe_endpoint(url),
+                    self._log_value(context),
+                )
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    timeout=self.config.timeout_seconds,
+                )
+                raw = response.text
+                parsed = self._json_or_text(raw)
+                status = int(response.status_code)
+                logger.info(
+                    "WATI_REPLY_RESPONSE attempt=%s status=%s response=%s",
+                    attempt,
+                    status,
+                    self._log_value(parsed),
+                )
+                if self._response_accepted(status, parsed):
+                    return WatiSendResult(
+                        attempted=True,
+                        sent=True,
+                        status_code=status,
+                        response=parsed,
+                        message_id=self._message_id(parsed),
+                    )
+                last_error = self._response_reason(status, parsed, raw)
+                last_status = status
+                last_response = parsed
+                if status < 500:
+                    break
+            except (requests.Timeout, requests.RequestException, OSError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "WATI_REPLY_ERROR attempt=%s phone=%s error=%s",
+                    attempt,
+                    self._mask_phone(normalized_phone),
+                    last_error,
+                )
+            if attempt < self.config.max_attempts:
+                time.sleep(min(0.5 * attempt, 2.0))
+
+        logger.error(
+            "WATI_REPLY_FAILED phone=%s error=%s",
+            self._mask_phone(normalized_phone),
+            last_error,
+        )
+        return WatiSendResult(
+            attempted=True,
+            sent=False,
+            status_code=last_status,
+            reason=last_error,
+            response=last_response,
+            message_id=self._message_id(last_response),
+        )
+
     def send_booking_payment_link(self, payload: dict[str, Any]) -> WatiSendResult:
         if self.config is None:
             logger.info("WATI_SEND_SKIPPED reason=missing_configuration")

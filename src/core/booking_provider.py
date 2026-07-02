@@ -63,6 +63,11 @@ class SimulatorProvider(BookingProvider):
         ref = res.get("booking_id")
         self.bookings[ref] = {
             "booking_id": ref,
+            "booking_reference": res.get("booking_reference") or res.get("order_id") or "",
+            "order_id": res.get("order_id") or "",
+            "venue_id": res.get("venue_id") or "sim-venue",
+            "payment_url": res.get("payment_url") or "",
+            "payment_deadline": res.get("payment_deadline") or "",
             "confirmed": True,
             "location": memory.get("location", ""),
             "date": memory.get("preferred_date", ""),
@@ -72,7 +77,8 @@ class SimulatorProvider(BookingProvider):
             "customer_name": memory.get("customer_name", ""),
             "phone": memory.get("phone", ""),
             "room": memory.get("room") or memory.get("recommended_option", ""),
-            "status": "confirmed",
+            "status": res.get("status") or "RESERVED",
+            "payment_status": res.get("payment_status") or "UNPAID",
         }
         return res
 

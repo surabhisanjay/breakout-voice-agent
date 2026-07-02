@@ -9,6 +9,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 from src.agents.inbound_agent import InboundAgent  # noqa: E402
 from src.knowledge.knowledge_loader import KnowledgeLoader  # noqa: E402
 from src.memory.conversation_memory import ConversationMemory  # noqa: E402
+from src.services.conversation_guard import ConversationGuard  # noqa: E402
 
 
 def make_agent(tmp_path: Path) -> InboundAgent:
@@ -40,6 +41,53 @@ def test_frustration_repair_does_not_ask_for_contact_first(tmp_path: Path) -> No
 
     assert "missed what you were asking" in response
     assert "name and number" not in response.lower()
+
+
+def test_guard_handles_rescheduling_inflection_with_venue_policy(tmp_path: Path, monkeypatch) -> None:
+    memory = ConversationMemory(tmp_path / "policy.json")
+    memory.data["location"] = "Whitefield"
+    memory.save()
+    monkeypatch.setattr(
+        "src.services.conversation_guard.get_venue_policy",
+        lambda location: {
+            "cancellationPolicy": "Cancellation has graduated fees.",
+            "reschedulePolicy": "Rescheduling is free at least 48 hours ahead.",
+        },
+    )
+
+    result = ConversationGuard(memory).evaluate("And what about rescheduling?", "inbound_agent")
+
+    assert result is not None
+    assert result.debug["conversation_guard"]["category"] == "policy"
+    assert "free at least 48 hours" in result.response
+    assert "call you back" not in result.response.lower()
+
+
+def test_guard_repairs_repeated_frustration_without_resuming_qualification(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "repair.json")
+    memory.data.update(
+        {
+            "intent": "escape_room_inquiry",
+            "participants": 4,
+            "location": "Whitefield",
+            "recommended_option": "Murder Mystery",
+        }
+    )
+    memory.save()
+    guard = ConversationGuard(memory)
+
+    first = guard.evaluate("This is not helping.", "inbound_agent")
+    second = guard.evaluate("You keep repeating yourself.", "inbound_agent")
+
+    assert first is not None
+    assert "kept the details" in first.response
+    assert "may i have your name" not in first.response.lower()
+    assert second is not None
+    assert "connect you to a human" in second.response
+    assert "murder mystery would be a good fit" not in second.response.lower()
+    assert memory.data["participants"] == 4
+    assert memory.data["location"] == "Whitefield"
+    assert memory.data["recommended_option"] == "Murder Mystery"
 
 
 def test_horror_preference_answers_before_participant_question(tmp_path: Path) -> None:
@@ -78,8 +126,7 @@ def test_discount_question_does_not_collect_name_or_promise_offer(tmp_path: Path
 
     response = agent.handle_message("It is a little expensive. Is there any discount available?")["response"]
 
-    assert "confirmed discount information" in response
-    assert "don't want to promise" in response
+    assert "10% off for 4 or more players" in response
     assert "name" not in response.lower()
 
 

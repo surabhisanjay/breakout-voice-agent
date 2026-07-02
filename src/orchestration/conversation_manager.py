@@ -144,6 +144,7 @@ class ConversationManager:
         recommend_keywords = {
             "recommend", "suggest", "better for", "recommendation", "which one",
             "which rooms", "which would you choose", "what would you recommend",
+            "what would you choose", "if you were me",
             "something for",
         }
         if any(kw in lowered for kw in recommend_keywords):
@@ -193,6 +194,7 @@ class ConversationManager:
             re.search(
                 r"\b(?:recommend|suggest|best|better|popular|most people|favorite|favourite|"
                 r"which\s+(?:room|game|option|one)|what\s+would\s+you\s+recommend|"
+                r"what\s+would\s+you\s+choose|if\s+you\s+were\s+me|"
                 r"something\s+for\s+\d+\s+(?:people|players|adults|kids|children|of us)|"
                 r"second\s+(?:best|recommendation|option)|another\s+(?:option|room|game)|"
                 r"any\s+other\s+(?:option|room|game)|other\s+options?|different\s+(?:option|room|game)|"

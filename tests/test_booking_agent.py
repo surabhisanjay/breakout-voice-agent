@@ -49,6 +49,7 @@ def make_memory(tmp_path: Path, overrides: dict | None = None) -> ConversationMe
         "budget_range": "premium",
         "customer_name": "Siddharth Rao",
         "phone": "9876543210",
+        "time_preference": "any",
     }
     if overrides:
         defaults.update(overrides)
@@ -112,6 +113,73 @@ def test_customer_name_used_in_greeting(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     result = agent.handle_message("ready")
     assert "Siddharth" in result.response
+
+
+def test_reschedule_policy_interrupts_slot_selection_and_resumes(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path, {"location": "Whitefield"})
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["8:50 PM"]
+    agent._last_availability = {
+        "available": True,
+        "verified": True,
+        "slots": ["8:50 PM"],
+    }
+
+    result = agent.handle_message("And what about rescheduling?")
+
+    assert "reschedul" in result.response.lower()
+    assert "8:50 PM" in result.response
+    assert "didn't catch" not in result.response.lower()
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
+
+
+def test_kreeda_totals_are_persisted_as_price_breakdown(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    booking_result = {
+        "booking_id": "bk_price",
+        "venue_id": "venue_price",
+        "totals": {"subtotal": 2800, "total": 2520, "currency": "INR"},
+    }
+
+    agent._capture_price_breakdown(booking_result)
+
+    assert booking_result["price_breakdown"]["discount"] == 280
+    assert booking_result["price_breakdown"]["discount_percent"] == 10.0
+    assert booking_result["price_breakdown"]["final_price"] == 2520
+    assert agent.memory.data["price_breakdown"] == booking_result["price_breakdown"]
+    agent.orchestrator.check_payment_status = MagicMock()
+    agent._capture_price_breakdown(booking_result)
+    agent.orchestrator.check_payment_status.assert_not_called()
+
+
+def test_room_or_location_change_clears_stale_availability_cache(tmp_path: Path) -> None:
+    """Changing constraints must not reuse slots from the previous room/location."""
+    agent = make_agent(
+        tmp_path,
+        {
+            "location": "Koramangala",
+            "room": "Hostage",
+            "preferred_date": "Tomorrow",
+            "participants": 2,
+            "preferred_period": "evening",
+            "requested_time": "evening",
+            "time_preference": "period",
+        },
+    )
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["9:10 PM"]
+    agent._last_availability = {"available": True, "slots": ["9:10 PM"], "location": "Koramangala"}
+    agent.memory.data["last_suggested_slots"] = ["9:10 PM"]
+
+    agent.handle_message("Actually make it 4 people, and switch to Murder Mystery at Whitefield instead.")
+
+    assert agent.memory.data["participants"] == 4
+    assert agent.memory.data["location"] == "Whitefield"
+    assert agent.memory.data["room"] == "Murder Mystery"
+    assert agent.memory.data["selected_slot"] == ""
+    assert agent.memory.data["last_suggested_slots"] == []
+    assert "9:10 PM" not in agent._available_slots
+    assert agent._last_availability.get("location") == "Whitefield"
 
 
 # ------------------------------------------------------------------ #

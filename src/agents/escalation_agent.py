@@ -32,8 +32,11 @@ class EscalationAgent:
 
     HUMAN_REQUEST = re.compile(
         r"\b(?:speak|talk|connect|transfer)\s+(?:me\s+)?(?:to|with)\s+(?:a\s+|an\s+|the\s+|your\s+)?(?:human|person|manager|supervisor|agent|team|support|someone|anyone)\b"
+        r"|\btransfer\s+me\b"
         r"|\breal\s+person\b"
         r"|\bi\s+(?:want|need)\s+(?:a\s+|an\s+)?(?:human|person|manager|supervisor|agent)\b"
+        r"|\bi\s+(?:do\s+not|don't|dont)\s+want\s+(?:an?\s+)?(?:ai|bot|chatbot|automation)\b"
+        r"|\bi\s+(?:do\s+not|don't|dont)\s+want\s+to\s+(?:talk|speak|chat)\s+(?:to|with)\s+(?:an?\s+)?(?:ai|bot|chatbot|automation)\b"
         r"|\bget\s+me\s+(?:a\s+)?(?:human|person)\b"
         r"|\bconnect\s+me\s+(?:to|with)\s+(?:someone|anyone|a\s+(?:human|person|manager|supervisor|agent))\b"
         r"|\bplease\s+connect\s+me\s+(?:with|to)\b"
@@ -42,6 +45,7 @@ class EscalationAgent:
     )
     SAFETY_REQUEST = re.compile(
         r"\b(?:injured|injury|hurt|bleeding|cannot\s+breathe|can't\s+breathe|unresponsive|"
+        r"trouble\s+breathing|difficulty\s+breathing|hard\s+to\s+breathe|breathing\s+trouble|"
         r"not\s+responding|fire|smoke|burning|medical\s+emergency|safety\s+emergency|"
         r"fainted|faint|collapsed|collapse|passed\s+out|unconscious|seizure|"
         r"heart\s+attack|not\s+breathing|someone\s+fell)\b",
@@ -56,7 +60,7 @@ class EscalationAgent:
     )
     MISUNDERSTANDING = (
         "that's not what i asked", "that is not what i asked", "you keep asking",
-        "i already told you", "not listening", "not understanding", "you misunderstood",
+        "you keep repeating", "i already told you", "not listening", "not understanding", "you misunderstood",
         "booking is wrong", "my booking is wrong", "again and again",
     )
     FAILURE_TEXT = (
@@ -76,6 +80,7 @@ class EscalationAgent:
     ) -> EscalationResult:
         lowered = message.lower()
         reason = ""
+        previous_escalation = self.memory.data.get("escalation_state", {}) or {}
 
         response_text = str(getattr(result, "response", "")).lower()
         booking_result = getattr(result, "booking_result", None) or getattr(result, "booking", None)
@@ -100,6 +105,12 @@ class EscalationAgent:
             and len(set(recent_agent_turns)) == 1
             and not self._is_active_booking_update(message)
         )
+        explicit_loop_complaint = any(phrase in lowered for phrase in self.MISUNDERSTANDING)
+        explicit_negative_signal = (
+            sentiment.sentiment in {"frustrated", "angry", "upset", "urgent"}
+            or explicit_loop_complaint
+        )
+        profile_high_risk = getattr(sentiment, "sentiment_profile", {}).get("escalation_risk") == "high"
 
         if self.SAFETY_REQUEST.search(message):
             reason = "Customer reported an immediate safety concern"
@@ -109,20 +120,37 @@ class EscalationAgent:
             reason = "Customer requested a refund"
         elif sentiment.sentiment == "angry":
             reason = "Customer anger detected"
-        elif getattr(sentiment, "sentiment_profile", {}).get("escalation_risk") == "high":
+        elif profile_high_risk and explicit_negative_signal:
             reason = "High conversation-wide escalation risk"
-        elif sentiment.escalation_recommended or negative_count >= 2:
+        elif (sentiment.escalation_recommended and explicit_negative_signal) or negative_count >= 2:
             reason = "Repeated customer frustration detected"
-        elif any(phrase in lowered for phrase in self.MISUNDERSTANDING):
+        elif explicit_loop_complaint:
             reason = "Repeated misunderstanding reported by customer"
         elif failure_count >= 2:
             reason = "Multiple agent or integration failures"
         elif failed:
             reason = "Booking or integration failure"
-        elif repeated_loop:
+        elif repeated_loop and negative_count >= 1:
             reason = "Repeated conversation loop detected"
         elif any(term in lowered for term in ("refund dispute", "policy dispute", "this policy is unfair", "refuse this charge")):
             reason = "Policy or refund dispute"
+
+        if not reason and previous_escalation.get("escalate"):
+            preserved = EscalationResult(
+                True,
+                str(previous_escalation.get("reason") or "Escalation already requested"),
+                str(previous_escalation.get("summary") or "Escalation already requested."),
+                priority=str(previous_escalation.get("priority") or "medium"),
+                status=str(previous_escalation.get("status") or "unresolved"),
+                trigger=str(previous_escalation.get("trigger") or "manual_review"),
+                recommended_human_action=str(
+                    previous_escalation.get("recommended_human_action")
+                    or "Human should review the existing escalation"
+                ),
+            )
+            self.memory.data["escalation_state"] = preserved.to_dict()
+            self.memory.save()
+            return preserved
 
         provisional = {"escalate": bool(reason), "reason": reason}
         # Safety: if summary generation fails, never suppress a safety/human escalation.
@@ -195,7 +223,10 @@ class EscalationAgent:
             for term in (
                 "actually", "instead", "change", "switch", "update", "correct",
                 "correction", "make it", "use", "rather", "we are", "we're",
+                "there are", "of us", "people", "players", "participants",
+                "back to booking", "continue booking", "let's book", "lets book",
                 "my name is", "phone", "mobile", "contact number",
+                "morning", "afternoon", "evening",
             )
         ):
             return True

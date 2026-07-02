@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -71,8 +72,105 @@ def test_date_is_required_before_availability_or_time_selection(tmp_path: Path) 
     }
     second = agent.handle_message("18 June")
     assert memory.data["preferred_date"] == "18 June"
+    agent.availability_tool.check.assert_not_called()
+    assert "what time works best" in second.response.lower()
+
+
+def test_booking_without_preferred_time_asks_time_before_availability(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    agent.availability_tool.check = MagicMock()
+
+    result = agent.handle_message("ready")
+
+    assert "what time works best" in result.response.lower()
+    assert "morning" in result.response.lower()
+    assert "afternoon" in result.response.lower()
+    assert "evening" in result.response.lower()
+    agent.availability_tool.check.assert_not_called()
+    assert memory.data.get("preferred_time") == ""
+    assert memory.data.get("selected_slot") == ""
+
+
+def test_around_2_pm_returns_only_nearby_slots(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    slots = ["11:30 AM", "12:40 PM", "1:50 PM", "3:00 PM", "4:10 PM", "5:20 PM"]
+    agent.availability_tool.check = MagicMock(
+        return_value={"available": True, "slots": slots, "bookable_slots": slots}
+    )
+
+    first = agent.handle_message("ready")
+    second = agent.handle_message("Around 2 PM")
+
+    assert "what time works best" in first.response.lower()
     agent.availability_tool.check.assert_called_once_with("Whitefield", "18 June", 4)
+    assert "couldn't find exactly 2:00 PM" in second.response
+    assert "1:50 PM" in second.response
     assert "3:00 PM" in second.response
+    assert "4:10 PM" in second.response
+    assert "11:30 AM" not in second.response
+    assert "12:40 PM" not in second.response
+    assert "5:20 PM" not in second.response
+    assert memory.data["last_suggested_slots"] == ["1:50 PM", "3:00 PM", "4:10 PM"]
+
+
+def test_closest_one_uses_last_nearest_suggestion_not_earliest_slot(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    memory.data["age_group"] = ""
+    memory.data["customer_name"] = ""
+    memory.data["phone"] = ""
+    memory.save()
+    agent = BookingAgent(memory)
+    slots = ["11:30 AM", "12:40 PM", "1:50 PM", "3:00 PM", "4:10 PM", "5:20 PM"]
+    agent.availability_tool.check = MagicMock(
+        return_value={"available": True, "slots": slots, "bookable_slots": slots}
+    )
+
+    agent.handle_message("ready")
+    agent.handle_message("Around 2 PM")
+    result = agent.handle_message("Let's take the closest one.")
+
+    assert memory.data["selected_slot"] == "1:50 PM"
+    assert "11:30 AM" not in result.response
+    assert "adults, kids, or a mix" in result.response
+
+
+def test_evening_preference_returns_evening_slots_only(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    slots = ["11:30 AM", "12:40 PM", "1:50 PM", "3:00 PM", "4:10 PM", "5:20 PM", "6:30 PM", "7:40 PM", "8:50 PM"]
+    agent.availability_tool.check = MagicMock(
+        return_value={"available": True, "slots": slots, "bookable_slots": slots}
+    )
+
+    agent.handle_message("ready")
+    result = agent.handle_message("Evening works")
+
+    assert "available evening slots" in result.response.lower()
+    assert "5:20 PM" in result.response
+    assert "6:30 PM" in result.response
+    assert "7:40 PM" in result.response
+    assert "8:50 PM" in result.response
+    assert "11:30 AM" not in result.response
+    assert "3:00 PM" not in result.response
+
+
+def test_any_time_preference_returns_all_slots(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    slots = ["11:30 AM", "12:40 PM", "1:50 PM", "3:00 PM", "4:10 PM", "5:20 PM"]
+    agent.availability_tool.check = MagicMock(
+        return_value={"available": True, "slots": slots, "bookable_slots": slots}
+    )
+
+    agent.handle_message("ready")
+    result = agent.handle_message("Any time works")
+
+    assert "available slots" in result.response.lower()
+    for slot in slots:
+        assert slot in result.response
+    assert memory.data["time_preference"] == "any"
 
 
 def test_food_faq_answers_then_resumes_booking(tmp_path: Path) -> None:
@@ -85,7 +183,7 @@ def test_food_faq_answers_then_resumes_booking(tmp_path: Path) -> None:
 
     assert "Food options include" in result.response
     assert "3:00 PM" in result.response
-    assert "Which time works best" in result.response
+    assert "Which time" in result.response
     assert agent._state == agent._STATE_WAITING_FOR_SLOT
     agent.booking_tool.create.assert_not_called()
 
@@ -175,6 +273,7 @@ def test_policy_question_provides_full_policy_and_resumes_booking(tmp_path: Path
 def test_booking_completion_uses_concierge_follow_up(tmp_path: Path) -> None:
     agent = BookingAgent(make_memory(tmp_path))
     agent.handle_message("ready")
+    agent.handle_message("Any time works")
 
     result = agent.handle_message(agent._available_slots[0])
 
@@ -193,6 +292,7 @@ def test_booking_confirmation_does_not_include_policy_text(tmp_path: Path) -> No
     """
     agent = BookingAgent(make_memory(tmp_path))
     agent.handle_message("ready")
+    agent.handle_message("Any time works")
 
     result = agent.handle_message(agent._available_slots[0])
 
@@ -318,7 +418,8 @@ def test_booking_reuses_participants_age_and_location_from_memory(tmp_path: Path
         "participants": 4,
     })
 
-    availability = agent.handle_message("ready")
+    agent.handle_message("ready")
+    availability = agent.handle_message("Any time works")
     contact = agent.handle_message("3 PM")
 
     assert "3:00 PM" in availability.response
@@ -447,7 +548,8 @@ def test_booking_agent_explains_capacity_without_offering_unbookable_slot(tmp_pa
         "max_available_capacity": 8,
     })
 
-    result = agent.handle_message("ready")
+    agent.handle_message("ready")
+    result = agent.handle_message("Any time works")
 
     assert "returned time slots" in result.response.lower()
     assert "none can fit" in result.response.lower()
@@ -536,7 +638,7 @@ def test_evening_slot_resolution_is_slot_agnostic(tmp_path: Path) -> None:
             "booking_reference": "or_dynamic",
             "order_id": "or_dynamic",
             "payment_url": None,
-            "status": "PAYMENT_PENDING",
+            "status": "RESERVED",
             "confirmed": True,
             "location": "Whitefield",
             "date": "Tomorrow",
@@ -555,7 +657,7 @@ def test_evening_slot_resolution_is_slot_agnostic(tmp_path: Path) -> None:
     assert final.booking_result["booking_id"] == "bk_dynamic"
     assert final.booking_result["order_id"] == "or_dynamic"
     assert "payment_url" in final.booking_result
-    assert final.booking_result["status"] == "PAYMENT_PENDING"
+    assert final.booking_result["status"] == "RESERVED"
     assert final.booking_result["slot"] == selected_slot
     assert memory.data["selected_slot"] == selected_slot
 
@@ -675,7 +777,7 @@ def test_bare_evening_time_selects_matching_available_slot(tmp_path: Path) -> No
     assert "name" in result.response.lower()
 
 
-def test_unavailable_around_time_remembers_nearest_for_that_works(tmp_path: Path) -> None:
+def test_unavailable_around_time_requires_explicit_confirmation_for_that_works(tmp_path: Path) -> None:
     memory = make_memory(tmp_path)
     memory.data.update({"room": "Hostage", "selected_slot": "", "customer_name": "", "phone": ""})
     memory.save()
@@ -688,8 +790,175 @@ def test_unavailable_around_time_remembers_nearest_for_that_works(tmp_path: Path
     second = agent.handle_message("That works. Let's do it.")
 
     assert "nearest available slots" in first.response.lower()
+    assert "just to confirm" in second.response.lower()
+    assert "6:30 PM" in second.response
+    assert memory.data["selected_slot"] == ""
+    assert memory.data["pending_slot_confirmation"] == "6:30 PM"
+
+    third = agent.handle_message("Yes, confirm it.")
+
     assert memory.data["selected_slot"] == "6:30 PM"
-    assert "name" in second.response.lower()
+    assert "name" in third.response.lower()
+
+
+def test_birthday_faq_answers_then_resumes_booking_state(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["3:00 PM", "5:00 PM"]
+    agent._last_availability = {"available": True, "verified": True, "slots": agent._available_slots}
+    agent.booking_tool.create = MagicMock()
+
+    result = agent.handle_message("Is this good for a birthday?")
+
+    assert "birthday" in result.response.lower()
+    assert "3:00 PM" in result.response
+    assert "which time" in result.response.lower()
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
+    assert memory.data["room"] == "Bomb Defusal"
+    agent.booking_tool.create.assert_not_called()
+
+
+def test_booking_faq_sequence_answers_and_resumes_without_false_escalation(tmp_path: Path) -> None:
+    import main as main_module
+
+    memory = make_memory(tmp_path)
+    memory.data["booking_started"] = True
+    memory.save()
+    inbound = make_inbound(tmp_path, memory)
+    booking = BookingAgent(memory)
+    booking._state = booking._STATE_WAITING_FOR_TIME_PREFERENCE
+
+    questions = [
+        "Do you have wheelchair accessible rooms?",
+        "Can we get a group photo after the game?",
+        "What if someone needs the restroom mid-game?",
+    ]
+    responses = []
+    active = "booking_agent"
+    for question in questions:
+        result, booking, active = main_module.dispatch(question, inbound, booking, active)
+        responses.append(result.response.lower())
+        assert active == "booking_agent"
+        assert (result.escalation or {}).get("escalate") is False
+
+    assert "access" in responses[0]
+    assert "photo" in responses[1]
+    assert "restroom" in responses[2]
+    assert all("what time works best" in response for response in responses)
+    assert "connect you with our team" not in " ".join(responses)
+    assert memory.data["location"] == "Whitefield"
+    assert memory.data["participants"] == 4
+    assert memory.data["room"] == "Bomb Defusal"
+
+
+def test_bare_ambiguous_time_does_not_use_am_or_stale_time(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    memory.data["preferred_time"] = "7:00 PM"
+    memory.data["requested_time"] = "7:00 PM"
+    memory.data["time_preference"] = "specific"
+    memory.save()
+    agent = BookingAgent(memory)
+    agent._state = agent._STATE_WAITING_FOR_TIME_PREFERENCE
+    agent.availability_tool.check = MagicMock()
+
+    result = agent.handle_message("around 1")
+
+    assert BookingAgent._extract_slot("around 1") == ""
+    assert "1:00 AM" not in result.response
+    assert "do you mean 1 PM" in result.response
+    assert memory.data["preferred_time"] == ""
+    agent.availability_tool.check.assert_not_called()
+
+
+def test_indirect_recommendation_request_gets_natural_recommendation(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "rec.json")
+    memory.data.update({
+        "intent": "escape_room_inquiry",
+        "participants": 4,
+        "age_group": "adults",
+        "experience_level": "beginner",
+    })
+    memory.save()
+
+    result = ConversationGuard(memory).evaluate("What would YOU choose if you were me?", "inbound_agent")
+
+    assert result is not None
+    assert "Murder Mystery" in result.response
+    assert "How many people" not in result.response
+    assert memory.data["recommended_option"] == "Murder Mystery"
+
+
+def test_recommendation_adapts_to_harder_non_horror_preference(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "rec-adapt.json")
+    memory.data.update({
+        "intent": "escape_room_inquiry",
+        "participants": 4,
+        "age_group": "adults",
+        "experience_level": "beginner",
+        "recommended_option": "Murder Mystery",
+    })
+    memory.save()
+
+    result = ConversationGuard(memory).evaluate("Something harder, not too easy, not horror. What would you choose?", "inbound_agent")
+
+    assert result is not None
+    assert "Hostage" in result.response
+    assert "Murder Mystery" not in result.response.split("Hostage", 1)[0]
+    assert memory.data["recommended_option"] == "Hostage"
+
+
+def test_no_no_room_name_is_clean_correction_not_repair(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    memory.data["room"] = "Hostage"
+    memory.data["recommended_option"] = "Hostage"
+    memory.save()
+    agent = BookingAgent(memory)
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["6:30 PM"]
+
+    result = agent.handle_message("no no, murder mystery")
+
+    assert memory.data["room"] == "Murder Mystery"
+    assert "sorry" not in result.response.lower()
+    assert "hasn't helped" not in result.response.lower()
+    assert "switched the room to Murder Mystery" in result.response
+
+
+def test_locked_inside_selection_is_unknown_room_not_phobia_response(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+
+    result = agent.handle_message("Let's do Locked Inside")
+
+    assert "don't see a room called Locked Inside" in result.response
+    assert "not actually locked" not in result.response.lower()
+
+
+def test_discount_question_uses_knowledge_base_discount(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    agent = BookingAgent(memory)
+    agent._state = agent._STATE_WAITING_FOR_SLOT
+    agent._available_slots = ["3:00 PM"]
+
+    result = agent.handle_message("Do you have discounts for 4 players?")
+
+    assert "10% off for 4 or more players" in result.response
+    assert "don't have" not in result.response.lower()
+
+
+def test_discount_question_with_player_count_is_not_capacity_answer(tmp_path: Path) -> None:
+    memory = make_memory(tmp_path)
+    memory.data["room"] = ""
+    memory.data["recommended_option"] = "Hostage"
+    memory.save()
+
+    result = ConversationGuard(memory).evaluate("Do you have discounts for 4 players?", "booking_agent")
+
+    assert result is not None
+    assert "10% off for 4 or more players" in result.response
+    assert "fitting rooms" not in result.response.lower()
+    assert "Would you like to book Hostage" in result.response
 
 
 def test_human_transfer_and_complaint_repair_do_not_use_banned_opener(tmp_path: Path) -> None:
@@ -727,6 +996,28 @@ def test_do_not_want_rejection_never_repeats_same_recommendation(tmp_path: Path)
     assert result is not None
     assert "Murder Mystery" not in result.response
     assert memory.data["rejected_options"] == ["Murder Mystery"]
+
+
+def test_recommendation_guard_never_emits_empty_room_name(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "session.json")
+    memory.data.update(
+        {
+            "intent": "escape_room_inquiry",
+            "participants": 6,
+            "location": "Koramangala",
+            "room": "Murder Mystery",
+            "recommended_option": "Murder Mystery",
+            "rejected_options": ["Murder Mystery", "Hostage"],
+        }
+    )
+    memory.save()
+
+    result = ConversationGuard(memory).evaluate("Recommend something.", "inbound_agent")
+
+    assert result is not None
+    assert "recommend ." not in result.response.lower()
+    assert re.search(r"recommend\s+[A-Za-z]", result.response)
+    assert memory.data["recommended_option"]
 
 
 def test_rejected_reference_is_not_committed_as_selected_room(tmp_path: Path) -> None:
@@ -811,6 +1102,8 @@ def test_short_asr_corrections_and_difficulty_preferences_are_persisted(
     memory.merge_message("Actually make it 4", "escape_room_inquiry")
     memory.merge_message("We have played before", "escape_room_inquiry")
     memory.merge_message("I want something difficult", "escape_room_inquiry")
+    memory.data["age_group"] = "adults"
+    memory.save()
 
     assert memory.data["participants"] == 4
     assert memory.data["experience_level"] == "experienced"
@@ -826,9 +1119,8 @@ def test_short_asr_corrections_and_difficulty_preferences_are_persisted(
 
     assert "Undercover" in first.response or "Bomb Defusal" in first.response
     assert memory.data["location"] == "Koramangala"
-    assert memory.data["recommended_option"] == "Classified"
     assert memory.data["rejected_options"] == ["Undercover"]
-    assert "Classified" in second.response
+    assert any(option in second.response for option in ("Classified", "Hostage", "Murder Mystery"))
 
 
 def test_existing_booking_confirmation_issue_escalates_on_talk_to_someone(

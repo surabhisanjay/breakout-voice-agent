@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -249,7 +249,10 @@ def test_live_prepare_booking_uses_alias_ids(monkeypatch, caplog) -> None:
     }]
     booking_provider.create_instant_cart.return_value = {"cartId": "cart-live-123"}
     booking_provider.create_confirmed_booking.return_value = {
-        "bookingId": "bk-live-123", "orderId": "or-live-123", "status": "CONFIRMED"
+        "bookingId": "bk-live-123",
+        "orderId": "or-live-123",
+        "status": "CONFIRMED",
+        "totals": {"subtotal": 4200, "total": 3780, "currency": "INR"},
     }
 
     orchestrator = BookingOrchestrator(
@@ -268,6 +271,7 @@ def test_live_prepare_booking_uses_alias_ids(monkeypatch, caplog) -> None:
         },
         "3 PM",
     )
+    assert booking["totals"] == {"subtotal": 4200, "total": 3780, "currency": "INR"}
 
     assert booking["booking_id"] == "bk-live-123"
     assert booking["booking_reference"] == "or-live-123"
@@ -293,7 +297,7 @@ def test_live_prepare_booking_uses_alias_ids(monkeypatch, caplog) -> None:
     assert any("BOOKING_REFERENCE=or-live-123" in message for message in messages)
 
 
-def test_live_reserved_order_with_payment_url_is_payment_pending(monkeypatch) -> None:
+def test_live_reserved_order_uses_payment_url_and_reserved_status(monkeypatch) -> None:
     monkeypatch.setenv("DEMO_MODE", "true")
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
     monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
@@ -315,6 +319,11 @@ def test_live_reserved_order_with_payment_url_is_payment_pending(monkeypatch) ->
         "bookingId": "bk-live-123",
         "orderId": "or-live-123",
         "orderUrl": "https://pay.example/order",
+        "paymentUrl": "https://pay.example/order?pr=true",
+        "paymentDeadline": "2026-07-12T13:15:00.000Z",
+        "venueId": "loc-whitefield",
+        "emailNotificationSent": True,
+        "whatsappNotificationSent": True,
         "status": "RESERVED",
     }
     orchestrator = BookingOrchestrator(booking_provider=booking_provider)
@@ -329,8 +338,14 @@ def test_live_reserved_order_with_payment_url_is_payment_pending(monkeypatch) ->
         "age_group": "adults",
     }, "6:30 PM")
 
-    assert result["status"] == "PAYMENT_PENDING"
-    assert result["payment_url"] == "https://pay.example/order"
+    assert booking_provider.create_confirmed_booking.call_args.args[0]["sendPaymentRequest"] is True
+    assert result["status"] == "RESERVED"
+    assert result["payment_status"] == "UNPAID"
+    assert result["payment_url"] == "https://pay.example/order?pr=true"
+    assert result["payment_deadline"] == "2026-07-12T13:15:00.000Z"
+    assert result["venue_id"] == "loc-whitefield"
+    assert result["email_notification_sent"] is True
+    assert result["whatsapp_notification_sent"] is True
 
 
 def test_live_booking_failure_emits_explicit_failure_marker(monkeypatch, caplog) -> None:
@@ -417,7 +432,7 @@ def test_live_prepare_booking_timeout_preserves_cart_and_customer_state(monkeypa
     assert memory["phone"] == "9982151357"
 
 
-def test_live_prepare_booking_accepts_reserved_status_with_order_url_payment_fallback(monkeypatch) -> None:
+def test_live_prepare_booking_does_not_use_order_url_as_payment_fallback(monkeypatch) -> None:
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
     monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
     monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
@@ -460,10 +475,93 @@ def test_live_prepare_booking_accepts_reserved_status_with_order_url_payment_fal
     }, "12:40 PM")
 
     assert result["confirmed"] is True
-    assert result["status"] == "PAYMENT_PENDING"
+    assert result["status"] == "RESERVED"
     assert result["booking_id"] == "cart-live-789"
     assert result["booking_reference"] == "order-live-789"
-    assert result["payment_url"] == "https://bs.kreeda.icu/breakout/order-live-789"
+    assert result["payment_url"] == ""
+
+
+def test_live_prepare_booking_adds_simulate_payment_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_API_KEY", "test-key")
+    monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
+    monkeypatch.setenv("SIMULATE_PAYMENT", "success")
+    monkeypatch.setenv("SIMULATE_PAYMENT_DELAY_SECONDS", "2")
+    provider = MagicMock(spec=BreakoutBookingProvider)
+    provider.get_booking_venues.return_value = [{"venueId": "venue-1", "name": "Whitefield"}]
+    provider.get_booking_games.return_value = [{
+        "gameId": "game-1",
+        "name": "Murder Mystery",
+        "peopleCategories": [{"categoryId": "adult", "categoryName": "Adults", "max": 8}],
+    }]
+    provider.search_booking_slots.return_value = [{
+        "eventId": "event-1", "gameId": "game-1", "date": "2026-07-12",
+        "time": "18:30", "available": 8, "isAvailable": True,
+    }]
+    provider.create_instant_cart.return_value = {"cartId": "cart-1"}
+    provider.create_confirmed_booking.return_value = {
+        "bookingId": "bk-1",
+        "orderId": "or-1",
+        "paymentUrl": "https://pay.example/order?pr=true",
+        "status": "RESERVED",
+        "venueId": "venue-1",
+    }
+    orchestrator = BookingOrchestrator(booking_provider=provider)
+    orchestrator.check_availability("Whitefield", "12 July", 4, "Murder Mystery")
+
+    result = orchestrator.prepare_booking({
+        "customer_name": "Siddharth Khandelwal",
+        "phone": "9982151357",
+        "location": "Whitefield",
+        "preferred_date": "12 July",
+        "participants": 4,
+        "age_group": "adults",
+    }, "6:30 PM")
+
+    payload = provider.create_confirmed_booking.call_args.args[0]
+    assert result["status"] == "RESERVED"
+    assert payload["simulatePayment"] == {"outcome": "success", "delaySeconds": 2}
+
+
+def test_check_payment_status_confirms_paid_booking(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_PROVIDER", "simulator")
+    orchestrator = BookingOrchestrator()
+    orchestrator.simulator.bookings["bk-paid"] = {
+        "booking_id": "bk-paid",
+        "order_id": "or-paid",
+        "venue_id": "venue-1",
+        "status": "RESERVED",
+        "payment_status": "UNPAID",
+        "total": 2500,
+    }
+
+    simulate = orchestrator.simulate_payment("venue-1", "bk-paid", "success")
+    status = orchestrator.check_payment_status("venue-1", "bk-paid")
+
+    assert simulate["isPaid"] is True
+    assert status["status"] == "CONFIRMED"
+    assert status["isPaid"] is True
+    assert status["totals"]["due"] == 0
+
+
+def test_check_payment_status_marks_expired_after_deadline(monkeypatch) -> None:
+    monkeypatch.setenv("BOOKING_PROVIDER", "simulator")
+    orchestrator = BookingOrchestrator()
+    expired_deadline = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    orchestrator.simulator.bookings["bk-expired"] = {
+        "booking_id": "bk-expired",
+        "order_id": "or-expired",
+        "venue_id": "venue-1",
+        "status": "RESERVED",
+        "payment_status": "UNPAID",
+        "payment_deadline": expired_deadline,
+        "total": 2500,
+    }
+
+    status = orchestrator.check_payment_status("venue-1", "bk-expired")
+
+    assert status["status"] == "EXPIRED"
+    assert status["isPaid"] is False
+    assert orchestrator.simulator.bookings["bk-expired"]["payment_status"] == "EXPIRED"
 
 
 def test_live_availability_preserves_slots_but_marks_group_capacity_unsupported(monkeypatch) -> None:

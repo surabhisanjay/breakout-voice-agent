@@ -29,6 +29,8 @@ class RecommendationEngine:
     }
 
     def can_recommend(self, memory: dict) -> bool:
+        if memory.get("room"):
+            return False
         intent = memory.get("intent", "")
         if intent == "escape_room_inquiry":
             return any(
@@ -75,6 +77,8 @@ class RecommendationEngine:
         return available[:limit]
 
     def recommend(self, message: str, memory: dict) -> Recommendation:
+        if memory.get("room"):
+            return Recommendation("", "")
         if not self.can_recommend(memory):
             return self.deterministic_fallback(message, memory)
 
@@ -152,7 +156,7 @@ class RecommendationEngine:
             )
 
         first_time = bool(re.search(r"\b(?:first[- ]?time|beginner|never done)\b", text)) or experience_level == "beginner"
-        thrill = bool(re.search(r"\b(?:thrill|thrilling|urgent|pressure|intense|adrenaline)\b", text))
+        thrill = bool(re.search(r"\b(?:thrill|thrilling|urgent|pressure|intense|adrenaline|harder?|difficult|challenging|challenge|not too easy|not easy)\b", text))
 
         # 4. First-time thrill seekers need a controlled step up, not the
         # hardest room. At Whitefield this is Hostage.
@@ -183,7 +187,7 @@ class RecommendationEngine:
                 "koramangala": ("Classified", "Undercover", "Murder Mystery", "Hostage"),
             }.get(
                 str(location).lower(),
-                ("Classified", "Bomb Defusal", "Undercover", "Prison Break"),
+                ("Hostage", "Classified", "Bomb Defusal", "Undercover"),
             )
             return self._validated_room_recommendation(
                 candidates,
@@ -258,6 +262,8 @@ class RecommendationEngine:
     @classmethod
     def deterministic_fallback(cls, message: str, memory: dict) -> Recommendation:
         """Return a usable deterministic recommendation for every input state."""
+        if memory.get("room"):
+            return Recommendation("", "")
         participants = cls._participant_count(memory.get("participants"))
         location = str(memory.get("location", "")).lower()
         text = " ".join(

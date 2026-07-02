@@ -325,14 +325,9 @@ def test_voice_faq_interruption_rules_rooms_bug_text_and_voice(tmp_path: Path, m
         # 1. Start flow: set participants=7
         agent.handle_message("We want to book an escape room for 7 friends.")
         assert agent.memory.data["participants"] == 7
-        assert agent.qualification_agent._waiting_for == "age_group"
-        
-        # 2. Provide age group: all adults
-        agent.handle_message("All adults.")
-        assert agent.memory.data["age_group"] == "adults"
         assert agent.qualification_agent._waiting_for == "location"
         
-        # 3. Interruption with rules/rooms query
+        # 2. Interruption with rules/rooms query
         res = agent.handle_message(phrase)
         
         # Must answer FAQ (contain rules or rooms info)
@@ -340,7 +335,6 @@ def test_voice_faq_interruption_rules_rooms_bug_text_and_voice(tmp_path: Path, m
         
         # Must preserve memory & qualification state
         assert agent.memory.data["participants"] == 7
-        assert agent.memory.data["age_group"] == "adults"
         assert agent.qualification_agent._waiting_for == "location"
         
         # Must resume the pending qualification question (should ask for location)
@@ -355,14 +349,9 @@ def test_voice_faq_interruption_rules_rooms_bug_text_and_voice(tmp_path: Path, m
         active = "inbound_agent"
         r1, booking_agent, active = main_module.dispatch("We want to book an escape room for 7 friends.", agent_voice, booking_agent, active)
         assert agent_voice.memory.data["participants"] == 7
-        assert agent_voice.qualification_agent._waiting_for == "age_group"
-        
-        # 2. Provide age group: all adults
-        r2, booking_agent, active = main_module.dispatch("All adults.", agent_voice, booking_agent, active)
-        assert agent_voice.memory.data["age_group"] == "adults"
         assert agent_voice.qualification_agent._waiting_for == "location"
         
-        # 3. Voice-mode interruption with rules/rooms query
+        # 2. Voice-mode interruption with rules/rooms query
         r3, booking_agent, active = main_module.dispatch(phrase, agent_voice, booking_agent, active)
         
         # Must answer FAQ completely
@@ -370,7 +359,6 @@ def test_voice_faq_interruption_rules_rooms_bug_text_and_voice(tmp_path: Path, m
         
         # Must preserve memory & qualification state
         assert agent_voice.memory.data["participants"] == 7
-        assert agent_voice.memory.data["age_group"] == "adults"
         assert agent_voice.qualification_agent._waiting_for == "location"
         
         # Must resume the pending qualification question (should ask for location)

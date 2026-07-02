@@ -29,7 +29,8 @@ def _payload() -> dict:
         {
             "booking_reference": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "totals": {"subtotal": 2800, "total": 2520, "currency": "INR"},
+            "status": "RESERVED",
         },
     )
 
@@ -244,7 +245,8 @@ def test_wati_send_invoked_after_booking(monkeypatch, tmp_path: Path) -> None:
             "booking_reference": "or_123",
             "order_id": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "totals": {"subtotal": 2800, "total": 2520, "currency": "INR"},
+            "status": "RESERVED",
             "confirmed": True,
             "location": "Whitefield",
             "date": "Tomorrow",
@@ -259,6 +261,9 @@ def test_wati_send_invoked_after_booking(monkeypatch, tmp_path: Path) -> None:
 
     assert booking_result["booking_id"] == "bk_123"
     assert "Sending the payment link" in response
+    assert "Total price: INR 2520" in response
+    assert booking_result["price_breakdown"]["discount"] == 280
+    assert memory.data["price_breakdown"]["final_price"] == 2520
     assert memory.data["whatsapp_payload"]["send"] is True
     assert memory.data["whatsapp_payload"]["wati_send"]["attempted"] is True
     assert len(calls) == 1
@@ -311,7 +316,7 @@ def test_booking_succeeds_even_if_wati_temporarily_fails(monkeypatch, tmp_path: 
 
     assert booking_result["booking_id"] == "bk_123"
     assert booking_result["confirmed"] is True
-    assert booking_result["status"] == "PAYMENT_PENDING"
+    assert booking_result["status"] == "RESERVED"
     assert "reserved your slot" in response.lower()
     assert booking_result["whatsapp"] == memory.data["whatsapp_delivery"]
     assert booking_result["whatsapp"]["attempted"] is True
@@ -349,7 +354,7 @@ def _booking_agent_with_result(memory: ConversationMemory) -> BookingAgent:
             "booking_reference": "or_123",
             "order_id": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "status": "RESERVED",
             "confirmed": True,
             "location": "Whitefield",
             "date": "Tomorrow",

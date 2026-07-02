@@ -47,6 +47,7 @@ def test_recommendation_date_acceptance_booking_and_wati_payload(tmp_path: Path)
         "I would like a recommendation.",
         "Tomorrow.",
         "Yes.",
+        "Evening works.",
         "Seven forty PM.",
         "Siddharth Khandelwal",
         "9982151357",
@@ -59,8 +60,11 @@ def test_recommendation_date_acceptance_booking_and_wati_payload(tmp_path: Path)
 
     assert "I'd recommend Murder Mystery" in responses[4]
     assert "What date" in responses[4]
-    assert responses[5] == "Great, Tomorrow works. Would you like to go ahead with Murder Mystery?"
-    assert "We have slots" in responses[6]
+    assert "What time works best" in responses[5]
+    assert "morning" in responses[5].lower()
+    assert "afternoon" in responses[5].lower()
+    assert "evening" in responses[5].lower()
+    assert "available evening slots" in responses[7]
     assert "Which room would you like" not in " ".join(responses)
     assert agent.memory.data["room"] == "Murder Mystery"
     assert agent.memory.data["selected_slot"] == "7:40 PM"
@@ -72,12 +76,37 @@ def test_recommendation_date_acceptance_booking_and_wati_payload(tmp_path: Path)
     assert payload["send"] is False
     assert payload["customer_name"] == "Siddharth Khandelwal"
     assert payload["phone"] == "9982151357"
-    assert payload["booking_id"] == agent.memory.data["booking_ref"]
+    assert payload["booking_id"] == agent.memory.data["booking_id"]
+    assert agent.memory.data["booking_ref"] == agent.memory.data["booking_order_id"]
     assert payload["room"] == "Murder Mystery"
     assert payload["location"] == "Whitefield"
     assert payload["date"] == "Tomorrow"
     assert payload["time"] == "7:40 PM"
     assert payload["payment_link"]
+
+
+def test_simulator_booking_result_matches_reserved_payment_contract(tmp_path: Path) -> None:
+    agent = _agent(tmp_path)
+    booking = None
+    active = "inbound_agent"
+    for turn in [
+        "Book Murder Mystery for four adults at Whitefield tomorrow evening.",
+        "7:40 PM",
+        "Siddharth Khandelwal",
+        "9982151357",
+    ]:
+        result, booking, active = dispatch(turn, agent, booking, active)
+
+    booking_result = result.booking_result or {}
+    assert booking_result["booking_id"]
+    assert booking_result["order_id"]
+    assert booking_result["booking_reference"] == booking_result["order_id"]
+    assert booking_result["payment_url"]
+    assert booking_result["status"] == "RESERVED"
+    assert booking_result["payment_deadline"]
+    assert agent.memory.data["booking_order_id"] == booking_result["order_id"]
+    assert agent.memory.data["bookingStatus"] == "RESERVED"
+    assert agent.memory.data["paymentStatus"] == "UNPAID"
 
 
 def test_compact_couple_opener_extracts_booking_context(tmp_path: Path) -> None:
@@ -98,6 +127,70 @@ def test_compact_couple_opener_extracts_booking_context(tmp_path: Path) -> None:
     assert agent.memory.data["preferred_date"] == "Tomorrow"
     assert agent.memory.data["recommended_option"]
     assert "Which location" not in result.response
+
+
+def test_location_correction_prefers_positive_location_before_not(tmp_path: Path) -> None:
+    agent = _agent(tmp_path)
+    booking = None
+    active = "inbound_agent"
+
+    dispatch("Book for four adults in Koramangala.", agent, booking, active)
+    result, booking, active = dispatch("Actually no, Whitefield not Koramangala.", agent, booking, active)
+
+    assert agent.memory.data["location"] == "Whitefield"
+    assert "Koramangala" not in result.state.get("location", "")
+
+
+def test_reference_expanded_rejection_does_not_repeat_same_room(tmp_path: Path) -> None:
+    agent = _agent(tmp_path)
+    booking = None
+    active = "inbound_agent"
+
+    dispatch("Couple. JP Nagar. First time. Tomorrow evening.", agent, booking, active)
+    result, booking, active = dispatch("No not that one.", agent, booking, active)
+
+    assert "Murder Mystery" in agent.memory.data["rejected_options"]
+    assert agent.memory.data["recommended_option"] != "Murder Mystery"
+    assert "Murder Mystery" not in result.response
+
+
+def test_rejection_acceptance_does_not_reset_booking_context(tmp_path: Path) -> None:
+    agent = _agent(tmp_path)
+    booking = None
+    active = "inbound_agent"
+
+    for turn in [
+        "Couple. JP Nagar. First time. Tomorrow evening.",
+        "Recommend something.",
+        "No not that one.",
+    ]:
+        result, booking, active = dispatch(turn, agent, booking, active)
+
+    assert agent.memory.data["recommended_option"] == "Hostage"
+    result, booking, active = dispatch("Fine book it.", agent, booking, active)
+
+    assert agent.memory.data["participants"] == 2
+    assert agent.memory.data["location"] == "JP Nagar"
+    assert agent.memory.data["preferred_date"] == "Tomorrow"
+    assert agent.memory.data["room"] == "Hostage"
+    assert "Which location" not in result.response
+
+
+def test_challenge_preference_is_not_extracted_as_customer_name(tmp_path: Path) -> None:
+    agent = _agent(tmp_path)
+    booking = None
+    active = "inbound_agent"
+
+    for turn in [
+        "Four adults, Koramangala, tomorrow evening.",
+        "We have played before.",
+        "Something hard.",
+    ]:
+        result, booking, active = dispatch(turn, agent, booking, active)
+
+    assert agent.memory.data["challenge_preference"] == "challenging"
+    assert agent.memory.data["customer_name"] == ""
+    assert agent.memory.data["first_name"] == ""
 
 
 def test_second_booking_request_preserves_contact_but_clears_stale_room(tmp_path: Path) -> None:
@@ -171,7 +264,9 @@ def test_spoken_unavailable_slot_returns_nearest_alternatives(tmp_path: Path) ->
     agent.memory.save()
     booking = BookingAgent(agent.memory)
     first, booking, active = dispatch("ready", agent, booking, "booking_agent")
-    assert "We have slots" in first.response
+    assert "what time works best" in first.response.lower()
+    first, booking, active = dispatch("Evening works", agent, booking, active)
+    assert "available evening slots" in first.response
 
     result, _booking, _active = dispatch("Eight fifty PM.", agent, booking, active)
 
@@ -199,6 +294,7 @@ def test_generated_booking_conversations_complete_without_recommendation_loop(tm
             "I would like a recommendation.",
             "Tomorrow.",
             "Yes.",
+            "Any time works.",
         ]
         responses: list[str] = []
         for turn in turns:

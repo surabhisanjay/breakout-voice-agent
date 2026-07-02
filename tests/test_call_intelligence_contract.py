@@ -48,6 +48,17 @@ def test_sentiment_agent_tracks_conversation_wide_frustration(tmp_path: Path) ->
     assert payload["conversation_health"] in {"watch", "poor"}
 
 
+def test_sentiment_detects_repeated_response_complaint(tmp_path: Path) -> None:
+    memory = ConversationMemory(tmp_path / "repeated-response.json")
+    result = SentimentAgent(memory).analyze(
+        "You keep repeating yourself.",
+        stage="booking",
+    )
+
+    assert result.sentiment == "frustrated"
+    assert "Repeated recommendation loop" in result.to_dict()["frustration_reasons"]
+
+
 def test_conversation_intelligence_for_successful_booking(tmp_path: Path) -> None:
     memory = _memory(
         tmp_path,
@@ -135,6 +146,32 @@ def test_escalation_consumes_sentiment_and_sets_priority(tmp_path: Path) -> None
     assert payload["status"] == "unresolved"
     assert payload["trigger"] in {"frustration", "manual_review"}
     assert payload["recommended_human_action"]
+
+
+def test_sentiment_detects_not_helping_and_angry_phrasing(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    agent = SentimentAgent(memory)
+
+    frustrated = agent.analyze("this isn't helping", stage="booking")
+    angry = agent.analyze("I am angry", stage="booking")
+
+    assert frustrated.sentiment == "frustrated"
+    assert angry.sentiment == "angry"
+
+
+def test_cooperative_faq_sequence_does_not_create_escalation_risk(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    agent = SentimentAgent(memory)
+
+    agent.analyze("Is parking available there?", stage="faq")
+    agent.analyze("What is the pricing?", stage="faq")
+    agent.analyze("Do you have food options?", stage="faq")
+    result = agent.analyze("How long does the game take?", stage="faq")
+
+    payload = result.to_dict()
+    assert result.escalation_recommended is False
+    assert payload["escalation_risk"] == "low"
+    assert "Repeated questions" not in payload["frustration_reasons"]
 
 
 def test_refund_and_human_requests_have_frontend_escalation_contract(tmp_path: Path) -> None:

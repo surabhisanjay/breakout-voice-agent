@@ -46,6 +46,7 @@ class AgentContractProvider:
     """
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None, timeout: float = 3.0) -> None:
+        self._explicit_config = bool(base_url or api_key)
         self.base_url = (base_url or os.environ.get("BOOKING_BASE_URL") or "https://bs.kreeda.icu").rstrip("/")
         self.api_key = api_key if api_key is not None else os.environ.get("BOOKING_API_KEY", "")
         self.timeout = timeout
@@ -61,7 +62,7 @@ class AgentContractProvider:
 
     def load_tools(self) -> None:
         """Fetch all tool definitions from the discovery endpoint and cache them."""
-        if os.environ.get("DEMO_MODE", "false").lower() == "true":
+        if os.environ.get("DEMO_MODE", "false").lower() == "true" and not self._explicit_config:
             logger.info("Demo mode active. Bypassing tool discovery.")
             return
 
@@ -162,6 +163,22 @@ class AgentContractProvider:
         """Look up details for an existing booking reference."""
         query = {"bookingRef": booking_ref}
         return self._request("GET", "/agent/v1.0/bookings", query=query)
+
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict[str, Any]:
+        """Check payment state through Kreeda's payment-status tool."""
+        return self._request(
+            "POST",
+            "/agent/v1.0/tools/check_payment_status",
+            payload={"venueId": venue_id, "bookingId": booking_id},
+        )
+
+    def simulate_payment(self, venue_id: str, booking_id: str, outcome: str) -> dict[str, Any]:
+        """Dev/test-only payment simulation endpoint."""
+        return self._request(
+            "POST",
+            "/agent/v1.0/simulate-payment",
+            payload={"venueId": venue_id, "bookingId": booking_id, "outcome": outcome},
+        )
 
     def _request(
         self,

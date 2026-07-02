@@ -202,6 +202,10 @@ def _enrich_conversation_result(
                 result.response = "I'll connect you with our team to review the refund request and the booking details."
             elif "human representative" in escalation.reason.lower():
                 result.response = "I'll connect you with our team and pass along the details already shared."
+            elif any(term in escalation.reason.lower() for term in ("anger", "frustration", "misunderstanding", "loop", "failure")):
+                result.response = "I hear you. I'll connect you with our team and pass along the full context."
+            else:
+                result.response = "I'll connect you with our team and pass along the full context."
         result.state = inbound.memory.as_state()
     except Exception:
         result.escalation = {"escalate": False, "reason": "", "summary": ""}
@@ -284,10 +288,15 @@ def _has_substantive_answer_before_question(response: str) -> bool:
     lowered = response.lower()
     if lowered.startswith(("i've noted", "got it. i've noted")):
         return False
+    question_index = response.find("?")
+    if question_index > 20 and any(mark in response[:question_index] for mark in (".", "!", ";")):
+        return True
     substantive_markers = (
         "food options", "rooms", "murder mystery", "hostage", "locked",
         "50 minutes", "experience", "cancellation", "refund", "parking",
         "available room", "escape room", "detail to hand", "call you back",
+        "beginners can", "game master", "children can", "birthday", "corporate",
+        "directions", "branch directions",
     )
     return any(marker in lowered for marker in substantive_markers)
 
@@ -325,6 +334,21 @@ def dispatch(
     try:
         import os
         message = inbound.memory.normalize_entity_aliases(message)
+        if _is_payment_link_recovery_turn(message) and (
+            inbound.memory.data.get("booking_id")
+            or inbound.memory.data.get("payment_link")
+            or inbound.memory.data.get("booking_started")
+        ):
+            if booking is None:
+                booking = BookingAgent(inbound.memory)
+            result = booking.handle_message(message)
+            result = _enrich_conversation_result(
+                message,
+                inbound,
+                result,
+                _observe_customer_sentiment(message, inbound),
+            )
+            return result, booking, "booking_agent"
         if _is_additional_booking_request(message) and (
             inbound.memory.data.get("completed_booking")
             or inbound.memory.data.get("booking_id")
@@ -336,19 +360,77 @@ def dispatch(
             active_agent = "inbound_agent"
         sentiment = _observe_customer_sentiment(message, inbound)
         demo_mode = os.environ.get("DEMO_MODE", "false").lower() == "true"
+        if _is_sticky_escalation_active(inbound.memory, active_agent):
+            escalation_state = dict(inbound.memory.data.get("escalation_state") or {})
+            escalation_state.update(
+                {
+                    "escalate": True,
+                    "status": escalation_state.get("status") or "unresolved",
+                    "trigger": escalation_state.get("trigger") or "human_request",
+                    "reason": escalation_state.get("reason") or "Customer requested human assistance",
+                    "recommended_human_action": escalation_state.get("recommended_human_action")
+                    or "Connect customer to a human representative with full call context",
+                }
+            )
+            inbound.memory.data["escalation_state"] = escalation_state
+            inbound.memory.add_turn("customer", message)
+            sticky_response = "I'll connect you with our team and pass along the details already shared."
+            inbound.memory.add_turn("agent", sticky_response)
+            result = AgentResponse(
+                response=sticky_response,
+                intent=str(inbound.memory.data.get("intent") or "general_faq"),
+                next_agent="escalation_agent",
+                should_handoff=True,
+                state=inbound.memory.as_state(),
+                escalation=escalation_state,
+            )
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
+            return result, booking, "escalation_agent"
+        if EscalationAgent.SAFETY_REQUEST.search(message):
+            safety_response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent."
+            inbound.memory.add_turn("customer", message)
+            inbound.memory.add_turn("agent", safety_response)
+            result = AgentResponse(
+                response=safety_response,
+                intent=str(inbound.memory.data.get("intent") or "safety_escalation"),
+                next_agent="escalation_agent",
+                should_handoff=True,
+                state=inbound.memory.as_state(),
+            )
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
+            return result, booking, "escalation_agent"
         guard_result = None
         if not _is_state_changing_booking_turn(message, inbound.memory):
             guard_result = ConversationGuard(inbound.memory).evaluate(message, active_agent)
         if guard_result is not None:
+            guard_result = _append_active_booking_resume(
+                guard_result,
+                booking,
+                active_agent,
+            )
             guard_result = _enrich_conversation_result(message, inbound, guard_result, sentiment)
             return guard_result, booking, guard_result.next_agent
         manager = ConversationManager(inbound.memory)
         target_agent, category = manager.determine_routing(message, active_agent)
         if (
+            target_agent != "booking_agent"
+            and category not in {"new_corporate", "new_birthday", "new_escape_room", "new_booking"}
+            and _is_clear_booking_progress_turn(message, inbound.memory)
+            and (
+                inbound.memory.data.get("preferred_date")
+                or inbound.memory.data.get("location")
+                or inbound.memory.data.get("booking_started")
+                or inbound.memory.data.get("current_workflow") == "booking"
+            )
+        ):
+            target_agent = "booking_agent"
+            category = "booking_progress"
+        if (
             demo_mode
             and target_agent == "booking_agent"
             and active_agent != "booking_agent"
             and not inbound.memory.handoff_ready(str(inbound.memory.data.get("intent", "escape_room_inquiry")))
+            and not _is_clear_booking_progress_turn(message, inbound.memory)
         ):
             target_agent = "inbound_agent"
             category = "continuing_workflow"
@@ -409,7 +491,14 @@ def dispatch(
         requested_intent = category_intents.get(category, "")
         if category == "new_booking":
             detected = manager.intent_detector.detect(message, previous_intent="").intent
-            if detected in {"bachelor_party", "farewell_party", "couple_event", "virtual_event"}:
+            if detected in {
+                "birthday_party",
+                "corporate_event",
+                "bachelor_party",
+                "farewell_party",
+                "couple_event",
+                "virtual_event",
+            }:
                 requested_intent = detected
         # General FAQ is the normal entry state. Moving from it into the first
         # booking flow must retain facts already volunteered during intake.
@@ -448,6 +537,11 @@ def dispatch(
                 "selected_slot", "booking_id", "booking_ref", "booking_order_id",
                 "payment_link", "whatsapp_payload", "completed_booking", "booking_started",
             ]
+            if is_replacement_group and not is_actual_topic_switch:
+                fields_to_clear = [
+                    field for field in fields_to_clear
+                    if field not in {"location", "preferred_date"}
+                ]
             for field in fields_to_clear:
                 inbound.memory.data[field] = ""
             inbound.memory.data["discussed_options"] = []
@@ -547,8 +641,21 @@ def _is_additional_booking_request(message: str) -> bool:
     )
 
 
+def _is_payment_link_recovery_turn(message: str) -> bool:
+    lowered = message.lower()
+    return bool(
+        re.search(
+            r"\b(?:didn'?t|not|never|haven'?t|have not)\s+(?:receive|get|got)\b.{0,40}\b(?:payment\s+)?link\b",
+            lowered,
+        )
+        or re.search(r"\b(?:resend|send|share)\b.{0,30}\b(?:payment\s+)?link\b", lowered)
+    )
+
+
 def _is_state_changing_booking_turn(message: str, memory: ConversationMemory) -> bool:
     lowered = message.lower()
+    if _is_capacity_question(lowered):
+        return False
     if _is_additional_booking_request(message):
         return True
     has_change_word = bool(
@@ -565,6 +672,86 @@ def _is_state_changing_booking_turn(message: str, memory: ConversationMemory) ->
         or memory._extract_participants(normalized)
         or memory._extract_participant_range(normalized)
     )
+
+
+def _is_clear_booking_progress_turn(message: str, memory: ConversationMemory) -> bool:
+    lowered = message.lower()
+    if _is_capacity_question(lowered):
+        return False
+    normalized = memory.normalize_number_words(memory.normalize_entity_aliases(message)).lower()
+    has_booking_signal = bool(
+        re.search(
+            r"\b(?:book|reserve|slot|slots|availability|available|tomorrow|today|evening|morning|afternoon)\b",
+            lowered,
+        )
+    )
+    has_entity = bool(
+        memory._extract_room(normalized)
+        or memory._extract_location(normalized)
+        or memory._extract_preferred_date(message)
+        or memory._extract_time(message)
+        or memory._extract_participants(normalized)
+        or memory._extract_participant_range(normalized)
+    )
+    has_stored_booking_context = bool(
+        memory.data.get("location")
+        or memory.data.get("room")
+        or memory.data.get("recommended_option")
+        or memory.data.get("preferred_date")
+        or memory.data.get("participants")
+    )
+    return has_booking_signal and (has_entity or has_stored_booking_context)
+
+
+def _is_sticky_escalation_active(memory: ConversationMemory, active_agent: str) -> bool:
+    state = memory.data.get("escalation_state") or {}
+    return active_agent == "escalation_agent" or bool(
+        isinstance(state, dict)
+        and state.get("escalate")
+        and str(state.get("status") or "").lower() not in {"resolved", "closed"}
+    )
+
+
+def _is_capacity_question(lowered: str) -> bool:
+    return bool(
+        ("?" in lowered or re.search(r"\b(?:which|what|can|will|does|do)\b", lowered))
+        and re.search(r"\b(?:fit|fits|capacity|hold|accommodate|for\s+\d{1,3}\s+(?:people|players))\b", lowered)
+    )
+
+
+def _append_active_booking_resume(
+    result: AgentResponse,
+    booking: BookingAgent | None,
+    active_agent: str,
+) -> AgentResponse:
+    if active_agent != "booking_agent" or booking is None:
+        return result
+    category = ""
+    try:
+        category = str((result.debug or {}).get("conversation_guard", {}).get("category") or "")
+    except Exception:
+        category = ""
+    if category in {"human_transfer", "repair", "pause_booking"}:
+        return result
+    if getattr(booking, "_state", "") != getattr(booking, "_STATE_WAITING_FOR_SLOT", "waiting_for_slot"):
+        return result
+    slots = list(getattr(booking, "_available_slots", []) or [])
+    if not slots:
+        return result
+    if "available slots" in result.response.lower() or "which time works best" in result.response.lower():
+        return result
+    try:
+        slots_text = booking._format_slots(slots)
+    except Exception:
+        slots_text = ", ".join(str(slot) for slot in slots)
+    result.response = f"{result.response} The available slots are {slots_text}. Which time would you prefer?"
+    state = dict(result.state or {})
+    state["booking_resume"] = {
+        "state": "waiting_for_slot",
+        "available_slots": slots,
+    }
+    result.state = state
+    return result
 
 
 def _start_additional_booking(inbound: InboundAgent) -> None:

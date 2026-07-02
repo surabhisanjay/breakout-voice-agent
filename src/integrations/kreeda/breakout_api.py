@@ -177,6 +177,19 @@ class BreakoutAPI:
     def create_confirmed_booking(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.call_agent_tool("create_booking", payload)
 
+    def check_payment_status(self, venue_id: str, booking_id: str) -> dict[str, Any]:
+        return self.call_agent_tool(
+            "check_payment_status",
+            {"venueId": venue_id, "bookingId": booking_id},
+        )
+
+    def simulate_payment(self, venue_id: str, booking_id: str, outcome: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/agent/v1.0/simulate-payment",
+            payload={"venueId": venue_id, "bookingId": booking_id, "outcome": outcome},
+        )
+
     def _request(
         self,
         method: str,

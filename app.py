@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+import time
 import base64
 import csv
 import io
@@ -17,19 +18,26 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from main import BASE_DIR, build_inbound_agent, dispatch
 from src.config.env_loader import booking_provider_label
 from src.agents.booking_agent import BookingAgent
 from src.agents.conversation_intelligence_agent import ConversationIntelligenceAgent
+from src.agents.evaluation_agent import EvaluationAgent
 from src.agents.inbound_agent import InboundAgent
 from src.memory.conversation_memory import ConversationMemory
+from src.services.wati_client import WatiClient
 
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 API_MEMORY_DIR = BASE_DIR / "memory" / "api_sessions"
 API_VERSION = "1.1.0"
+WEB_CHAT_DIR = BASE_DIR / "web_chat"
+DEFAULT_CLOSIRO_ORG_ID = os.environ.get("CLOSIRO_DEFAULT_ORG_ID", "org_test")
+DEFAULT_CLOSIRO_AGENT_ID = int(os.environ.get("CLOSIRO_DEFAULT_AGENT_ID", "1"))
 
 
 class HealthResponse(BaseModel):
@@ -46,6 +54,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     next_agent: str = "inbound_agent"
+    media: list[dict[str, Any]] = Field(default_factory=list)
+    booking: dict[str, Any] = Field(default_factory=dict)
+    payment: dict[str, Any] = Field(default_factory=dict)
+    price_breakdown: dict[str, Any] = Field(default_factory=dict)
     escalation: dict[str, Any] = Field(default_factory=dict)
     handoff_summary: Optional[dict[str, Any]] = None
     sentiment_analysis: dict[str, Any] = Field(default_factory=dict)
@@ -56,6 +68,16 @@ class ChatResponse(BaseModel):
     follow_up_recommendations: list[str] = Field(default_factory=list)
     transcript: list[dict[str, Any]] = Field(default_factory=list)
     recording: dict[str, Any] = Field(default_factory=dict)
+    conversation_summary: dict[str, Any] = Field(default_factory=dict)
+    evaluation: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    csat: dict[str, Any] = Field(default_factory=dict)
+    agent_score: float = 0.0
+    sentiment: dict[str, Any] = Field(default_factory=dict)
+    sentiment_graph: list[dict[str, Any]] = Field(default_factory=list)
+    learning: dict[str, Any] = Field(default_factory=dict)
+    follow_up: dict[str, Any] = Field(default_factory=dict)
+    conversation_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResetRequest(BaseModel):
@@ -69,6 +91,15 @@ class ResetResponse(BaseModel):
 class MemoryResponse(BaseModel):
     session_id: str
     memory: dict[str, Any]
+
+
+class WhatsAppWebhookResponse(BaseModel):
+    success: bool
+    ignored: bool = False
+    session_id: str = ""
+    response: str = ""
+    next_agent: str = "inbound_agent"
+    wati: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass
@@ -99,11 +130,131 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Breakout Agent API", version=API_VERSION, lifespan=lifespan)
+if WEB_CHAT_DIR.is_dir():
+    app.mount("/web-chat/assets", StaticFiles(directory=WEB_CHAT_DIR), name="web_chat_assets")
 api_v1 = APIRouter(prefix="/api/v1")
 
 
 def _json_log_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
+
+
+# ---------------------------------------------------------------------------
+# Developer execution trace  (stdout, gated by BREAKOUT_DEBUG=true)
+# ---------------------------------------------------------------------------
+_TRACE_SEP = "=" * 60
+_TRACE_DIV = "-" * 60
+_TRACE_SLOT_KEYS = (
+    "intent", "participants", "location", "age_group",
+    "preferred_date", "room", "customer_name", "phone",
+    "current_workflow", "booking_started",
+)
+
+
+def _dev_trace(
+    session_id: str,
+    message: str,
+    result: Any,
+    memory_before: dict,
+    memory_after: dict,
+    latency_ms: float,
+) -> None:
+    """Print a bordered developer execution trace to stdout.
+    Only active when the environment variable BREAKOUT_DEBUG=true.
+    Never called in production; zero impact on business logic.
+    """
+    if os.environ.get("BREAKOUT_DEBUG", "false").lower() != "true":
+        return
+
+    intent          = getattr(result, "intent", "") or ""
+    next_agent      = getattr(result, "next_agent", "") or ""
+    should_handoff  = getattr(result, "should_handoff", False)
+    missing_fields  = getattr(result, "missing_fields", []) or []
+    recommendation  = getattr(result, "recommendation", {}) or {}
+    booking_result  = getattr(result, "booking_result", None)
+    sentiment       = getattr(result, "sentiment_analysis", {}) or {}
+    escalation      = getattr(result, "escalation", {}) or {}
+    debug           = getattr(result, "debug", {}) or {}
+    response_text   = getattr(result, "response", "") or ""
+
+    rec_option  = recommendation.get("option", "")  if isinstance(recommendation, dict) else ""
+    rec_reason  = recommendation.get("reason", "")  if isinstance(recommendation, dict) else ""
+
+    extracted       = debug.get("extracted_entities", {}) or {}
+    reasoner        = debug.get("reasoner_decision", {}) or {}
+    guard_fired     = bool(debug.get("guard_fired"))
+    guard_reason    = debug.get("guard_reason", "")
+
+    # Pre-compute non-ASCII constants so Python 3.9 f-strings stay backslash-free
+    _na      = "---"
+    _ellip   = "..."
+
+    # Booking / Kreeda tool call summary
+    tool_section: list[str] = []
+    if booking_result and isinstance(booking_result, dict):
+        loc_v  = memory_after.get("location", "")
+        date_v = memory_after.get("preferred_date", "")
+        room_v = memory_after.get("room", "")
+        bref   = booking_result.get("booking_ref") or booking_result.get("booking_id", "")
+        bstat  = booking_result.get("status", "?")
+        tool_section = [
+            "  Tool         : Kreeda availability / booking",
+            f"  Input slots  : location={loc_v!r}  date={date_v!r}  room={room_v!r}",
+            f"  Output       : status={bstat}  ref={bref}",
+        ]
+    else:
+        tool_section = ["  Tool Calls   : none this turn"]
+
+    mem_b = {k: memory_before.get(k, "") for k in _TRACE_SLOT_KEYS}
+    mem_a = {k: memory_after.get(k, "")  for k in _TRACE_SLOT_KEYS}
+
+    resp_display = response_text[:200] + (_ellip if len(response_text) > 200 else "")
+
+    rec_opt_display = rec_option or _na
+    rec_rsn_display = rec_reason or _na
+    rsn_action      = reasoner.get("action", _na)
+    rsn_conf        = float(reasoner.get("confidence", 0))
+    sent_label      = sentiment.get("sentiment", _na) if isinstance(sentiment, dict) else _na
+    sent_conf       = float(sentiment.get("confidence", 0.0)) if isinstance(sentiment, dict) else 0.0
+    esc_active      = bool(escalation.get("escalate")) if isinstance(escalation, dict) else False
+    esc_rsn_display = (escalation.get("reason") if isinstance(escalation, dict) else "") or _na
+    guard_label     = ("FIRED  reason=" + guard_reason) if guard_fired else "pass"
+
+    lines = [
+        _TRACE_SEP,
+        "[DEV TRACE]  POST /chat",
+        _TRACE_SEP,
+        f"Session ID      : {session_id}",
+        f"Customer (ASR)  : {message}",
+        _TRACE_DIV,
+        "dispatch()",
+        f"  Conversation Guard : {guard_label}",
+        f"  Conversation Mgr   : routed to {next_agent}  (handoff={should_handoff})",
+        f"  Recommendation     : {rec_opt_display}",
+        f"    Reason           : {rec_rsn_display}",
+        f"  Reasoner Action    : {rsn_action}  (conf={rsn_conf:.2f})",
+        _TRACE_DIV,
+        "Booking Agent",
+        *tool_section,
+        _TRACE_DIV,
+        f"Intent          : {intent}  (missing: {', '.join(missing_fields) or 'none'})",
+        f"Sentiment       : {sent_label}  (confidence={sent_conf:.2f})",
+        f"Escalation      : {esc_active}  reason={esc_rsn_display}",
+        _TRACE_DIV,
+        "Memory BEFORE",
+        *[f"  {k:<20}: {v}" for k, v in mem_b.items()],
+        "Memory AFTER",
+        *[f"  {k:<20}: {v}" for k, v in mem_a.items()],
+        "Extracted Entities",
+        *(  [f"  {k}: {v}" for k, v in extracted.items()] if extracted else ["  (none)"]  ),
+        _TRACE_DIV,
+        f"Final Response  : {resp_display}",
+        _TRACE_DIV,
+        f"Latency         : {latency_ms:.1f} ms",
+        _TRACE_SEP,
+    ]
+    print("\n".join(lines), flush=True)
+
 
 
 @app.middleware("http")
@@ -143,6 +294,68 @@ def _session_memory_path(session_id: str) -> Path:
     return API_MEMORY_DIR / f"{clean}.json"
 
 
+def _whatsapp_session_id(phone: str) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        digits = f"91{digits}"
+    if not digits:
+        raise HTTPException(status_code=400, detail="WhatsApp sender phone is required.")
+    return _validate_session_id(f"whatsapp:{digits}")
+
+
+def _first_text(value: Any, keys: set[str]) -> str:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in keys and item not in (None, ""):
+                if isinstance(item, dict) and "body" in item:
+                    return str(item["body"]).strip()
+                if not isinstance(item, (dict, list)):
+                    return str(item).strip()
+            nested = _first_text(item, keys)
+            if nested:
+                return nested
+    if isinstance(value, list):
+        for item in value:
+            nested = _first_text(item, keys)
+            if nested:
+                return nested
+    return ""
+
+
+def _extract_wati_message(payload: dict[str, Any]) -> tuple[str, str, bool]:
+    event_type = str(
+        payload.get("eventType")
+        or payload.get("event")
+        or payload.get("type")
+        or ""
+    ).lower()
+    if event_type in {"message_status", "sentmessage", "templatemessage", "status"}:
+        return "", "", True
+    if payload.get("fromMe") is True or payload.get("isFromMe") is True:
+        return "", "", True
+
+    phone = _first_text(
+        payload,
+        {
+            "waid", "whatsappnumber", "whatsapp_number", "sender", "from",
+            "phone", "mobilenumber", "mobile", "contactnumber",
+        },
+    )
+    message = ""
+    for key in ("text", "body", "message", "messageText", "textMessage"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            message = str(value.get("body") or value.get("text") or "").strip()
+        elif value not in (None, ""):
+            message = str(value).strip()
+        if message:
+            break
+    if not message:
+        message = _first_text(payload, {"body", "messagetext", "textmessage"})
+    return phone, message, False
+
+
 def _api_args() -> Namespace:
     return Namespace(model=None, no_openai=False)
 
@@ -170,6 +383,405 @@ def _get_runtime(session_id: str) -> SessionRuntime:
         return runtime
 
 
+def _normalise_media_item(item: Any, fallback_type: str = "") -> dict[str, Any] | None:
+    if isinstance(item, str):
+        url = item.strip()
+        if not url:
+            return None
+        return {"type": fallback_type or _infer_media_type(url), "url": url, "title": ""}
+    if not isinstance(item, dict):
+        return None
+    url = str(item.get("url") or item.get("href") or item.get("src") or "").strip()
+    if not url:
+        return None
+    media_type = str(item.get("type") or item.get("media_type") or fallback_type or _infer_media_type(url)).strip()
+    return {
+        "type": media_type,
+        "url": url,
+        "title": str(item.get("title") or item.get("name") or item.get("label") or "").strip(),
+        "thumbnail_url": str(item.get("thumbnail_url") or item.get("thumbnail") or "").strip(),
+        "mime_type": str(item.get("mime_type") or item.get("mime") or "").strip(),
+    }
+
+
+def _infer_media_type(url: str) -> str:
+    lowered = url.lower().split("?", 1)[0]
+    if lowered.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")):
+        return "image"
+    if lowered.endswith((".mp4", ".webm", ".mov", ".m4v")):
+        return "video"
+    if lowered.endswith(".pdf"):
+        return "document"
+    return "link"
+
+
+def _extract_media_payload(result: Any) -> list[dict[str, Any]]:
+    state = getattr(result, "state", {}) or {}
+    candidates: list[dict[str, Any]] = []
+    for key, fallback_type in (
+        ("media", ""),
+        ("attachments", ""),
+        ("images", "image"),
+        ("image_urls", "image"),
+        ("videos", "video"),
+        ("video_urls", "video"),
+        ("documents", "document"),
+        ("document_urls", "document"),
+    ):
+        raw = state.get(key)
+        if not raw:
+            continue
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            media = _normalise_media_item(item, fallback_type)
+            if media:
+                candidates.append(media)
+    seen: set[str] = set()
+    media_items: list[dict[str, Any]] = []
+    for item in candidates:
+        url = item["url"]
+        if url in seen:
+            continue
+        seen.add(url)
+        media_items.append(item)
+    return media_items
+
+
+def _extract_booking_payload(result: Any) -> dict[str, Any]:
+    state = getattr(result, "state", {}) or {}
+    booking_result = getattr(result, "booking_result", None) or getattr(result, "booking", None) or {}
+    if not isinstance(booking_result, dict):
+        booking_result = {}
+    booking_id = str(state.get("booking_id") or booking_result.get("booking_id") or "").strip()
+    if not booking_id:
+        return {}
+    price_breakdown = _extract_price_breakdown(result)
+    return {
+        "booking_id": booking_id,
+        "reference": str(state.get("booking_ref") or booking_result.get("booking_reference") or "").strip(),
+        "order_id": str(state.get("orderId") or state.get("order_id") or booking_result.get("order_id") or "").strip(),
+        "status": str(state.get("bookingStatus") or state.get("booking_status") or booking_result.get("status") or "").strip(),
+        "room": str(state.get("room") or state.get("recommended_option") or booking_result.get("room") or "").strip(),
+        "location": str(state.get("location") or booking_result.get("location") or "").strip(),
+        "date": str(state.get("preferred_date") or booking_result.get("date") or "").strip(),
+        "time": str(state.get("selected_slot") or booking_result.get("slot") or "").strip(),
+        "participants": state.get("participants") or state.get("company_size") or booking_result.get("participants") or "",
+        "price_breakdown": price_breakdown,
+    }
+
+
+def _extract_price_breakdown(result: Any) -> dict[str, Any]:
+    state = getattr(result, "state", {}) or {}
+    booking_result = getattr(result, "booking_result", None) or getattr(result, "booking", None) or {}
+    candidates = (
+        state.get("price_breakdown"),
+        booking_result.get("price_breakdown") if isinstance(booking_result, dict) else None,
+    )
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("final_price") is not None:
+            return dict(candidate)
+    return {}
+
+
+def _extract_payment_payload(result: Any) -> dict[str, Any]:
+    state = getattr(result, "state", {}) or {}
+    booking_result = getattr(result, "booking_result", None) or getattr(result, "booking", None) or {}
+    if not isinstance(booking_result, dict):
+        booking_result = {}
+    payment_url = str(
+        state.get("paymentUrl")
+        or state.get("payment_url")
+        or state.get("payment_link")
+        or booking_result.get("payment_url")
+        or booking_result.get("paymentUrl")
+        or ""
+    ).strip()
+    payment_status = str(state.get("paymentStatus") or state.get("payment_status") or booking_result.get("payment_status") or "").strip()
+    deadline = str(state.get("paymentDeadline") or state.get("payment_deadline") or booking_result.get("payment_deadline") or "").strip()
+    if not (payment_url or payment_status or deadline):
+        return {}
+    return {
+        "status": payment_status,
+        "payment_url": payment_url,
+        "payment_deadline": deadline,
+        "booking_status": str(state.get("bookingStatus") or state.get("booking_status") or booking_result.get("status") or "").strip(),
+    }
+
+
+def _reporting_payload(
+    session_id: str,
+    result: Any,
+    memory: dict[str, Any],
+    latency_ms: float,
+) -> dict[str, Any]:
+    transcript = list(getattr(result, "transcript", []) or [])
+    sentiment = dict(getattr(result, "sentiment_analysis", {}) or {})
+    escalation = dict(getattr(result, "escalation", {}) or {})
+    handoff_summary = getattr(result, "handoff_summary", None)
+    evaluation_result = EvaluationAgent().evaluate(
+        {
+            "memory": memory,
+            "transcript": transcript,
+            "escalation": escalation,
+            "handoff_summary": handoff_summary,
+        }
+    )
+    evaluation = {
+        "score": evaluation_result.score,
+        "category_scores": evaluation_result.category_scores,
+        "reasoning": evaluation_result.reasoning,
+        "flags": evaluation_result.flags,
+    }
+    sentiment_graph: list[dict[str, Any]] = []
+    for index, item in enumerate(memory.get("sentiment_history") or [], start=1):
+        label = str(item.get("sentiment") or item.get("label") or "neutral").lower()
+        score = 0.18
+        if label in {"positive", "happy"}:
+            score = 0.75
+        elif label in {"negative", "frustrated", "angry"}:
+            score = -0.72
+        sentiment_graph.append({"turn": index, "score": score, "label": label.title()})
+    if not sentiment_graph:
+        sentiment_graph = [{"turn": 1, "score": 0.18, "label": "Neutral"}]
+
+    escalated = bool(escalation.get("escalate") or escalation.get("required"))
+    booking_id = str(memory.get("booking_id") or "")
+    final_sentiment = str(memory.get("sentiment") or "neutral").lower()
+    csat_score = 4.2 + (0.5 if booking_id else 0.0) - (0.4 if escalated else 0.0)
+    if final_sentiment in {"negative", "frustrated", "angry"}:
+        csat_score -= 1.0
+    csat = {
+        "score": max(1.0, min(5.0, round(csat_score, 1))),
+        "confidence": 0.72,
+        "reason": "Predicted from final sentiment, escalation state, and booking completion.",
+    }
+    ai_summary = dict(getattr(result, "ai_summary", {}) or {})
+    conversation_summary = {
+        "conversation_id": session_id,
+        "customer_name": str(memory.get("customer_name") or ""),
+        "phone": str(memory.get("phone") or ""),
+        "intent": str(getattr(result, "intent", "") or memory.get("intent") or ""),
+        "outcome": "escalated" if escalated else ("booking_reserved" if booking_id else "in_progress"),
+        "turn_count": len(transcript),
+        "venue": str(memory.get("location") or ""),
+        "room": str(memory.get("room") or memory.get("recommended_option") or ""),
+        "date": str(memory.get("preferred_date") or ""),
+        "time": str(memory.get("selected_slot") or ""),
+        "booking_id": booking_id,
+        "payment_status": str(memory.get("paymentStatus") or memory.get("payment_status") or ""),
+        "escalation_status": "escalated" if escalated else "none",
+        "final_sentiment": final_sentiment,
+        "summary": str(ai_summary.get("summary") or getattr(result, "response", "") or ""),
+    }
+    customer_turns = [turn for turn in transcript if str(turn.get("role") or "").lower() == "customer"]
+    joined = "\n".join(str(turn.get("text") or "") for turn in customer_turns).lower()
+    metrics = {
+        "turn_count": len(transcript),
+        "customer_turn_count": len(customer_turns),
+        "response_time_ms": round(latency_ms, 1),
+        "api_call_count": len(customer_turns),
+        "booking_completed": bool(booking_id),
+        "payment_link_sent": bool(memory.get("paymentUrl") or memory.get("payment_url")),
+        "escalation_requested": bool(re.search(r"\b(?:human|real person|transfer me|connect me)\b", joined)),
+        "escalated": escalated,
+        "faq_count": sum(joined.count(term) for term in ("parking", "food", "price", "birthday", "cancel", "reschedul")),
+    }
+    topics = [term for term in ("parking", "food", "pricing", "birthday", "cancellation", "reschedule", "payment") if term in joined]
+    learning = {
+        "observed_topics": topics,
+        "drop_off_stage": "escalation" if escalated else ("payment_pending" if booking_id else "in_progress"),
+        "conversation_loops_found": [],
+        "backend_errors": [],
+    }
+    follow_up = {"recommendations": list(getattr(result, "follow_up_recommendations", []) or [])}
+    payload = {
+        "conversation_summary": conversation_summary,
+        "evaluation": evaluation,
+        "metrics": metrics,
+        "csat": csat,
+        "agent_score": float(evaluation_result.score),
+        "sentiment": sentiment,
+        "sentiment_graph": sentiment_graph,
+        "learning": learning,
+        "follow_up": follow_up,
+        "conversation_history": transcript,
+    }
+    memory.update(payload)
+    return payload
+
+
+def _crm_org() -> dict[str, Any]:
+    return closira_store.org(os.environ.get("CLOSIRO_DEFAULT_ORG_ID", DEFAULT_CLOSIRO_ORG_ID))
+
+
+def _crm_agent_id() -> int:
+    try:
+        return int(os.environ.get("CLOSIRO_DEFAULT_AGENT_ID", str(DEFAULT_CLOSIRO_AGENT_ID)))
+    except (TypeError, ValueError):
+        return DEFAULT_CLOSIRO_AGENT_ID
+
+
+def _find_or_create_contact(org: dict[str, Any], memory: dict[str, Any], channel: str) -> int:
+    org_id = org.get("org_id") or os.environ.get("CLOSIRO_DEFAULT_ORG_ID", DEFAULT_CLOSIRO_ORG_ID)
+    phone = "".join(ch for ch in str(memory.get("phone") or memory.get("whatsapp_number") or "") if ch.isdigit())
+    name = str(memory.get("customer_name") or "").strip()
+    for contact in org["contacts"]:
+        contact_phone = "".join(ch for ch in str(contact.get("phone") or "") if ch.isdigit())
+        if phone and contact_phone.endswith(phone[-10:]):
+            contact["last_activity"] = _now_iso()
+            if name and not contact.get("name"):
+                contact["name"] = name
+            return int(contact["id"])
+    contact_id = closira_store.next_id(org, "contacts")
+    first_name = str(memory.get("first_name") or (name.split(" ", 1)[0] if name else "")).strip()
+    last_name = str(memory.get("last_name") or (name.split(" ", 1)[1] if " " in name else "")).strip()
+    contact = {
+        "id": contact_id,
+        "org_id": org_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": name or phone or "Web Chat Visitor",
+        "phone": phone,
+        "email": str(memory.get("email") or ""),
+        "type": "contact",
+        "priority": "medium",
+        "stage": "active",
+        "assigned_to": _crm_agent_id(),
+        "source": channel,
+        "channel": channel,
+        "value": 0,
+        "last_activity": _now_iso(),
+        "created_at": _now_iso(),
+    }
+    org["contacts"].append(contact)
+    return contact_id
+
+
+def _transcript_lines(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if transcript:
+        return [
+            {
+                "sequence": int(item.get("sequence") or item.get("index") or idx + 1),
+                "speaker_type": str(item.get("speaker_type") or item.get("role") or item.get("speaker") or "").lower() or "unknown",
+                "text": str(item.get("text") or ""),
+                "spoken_at_second": float(item.get("spoken_at_second") or idx * 2.0),
+            }
+            for idx, item in enumerate(transcript)
+        ]
+    return []
+
+
+def _persist_chat_result(session_id: str, runtime: SessionRuntime, result: Any, channel: str = "web_chat") -> None:
+    org = _crm_org()
+    org_id = os.environ.get("CLOSIRO_DEFAULT_ORG_ID", DEFAULT_CLOSIRO_ORG_ID)
+    memory = runtime.inbound.memory.data
+    contact_id = _find_or_create_contact(org, memory, channel)
+    conversation = memory.get("conversation") if isinstance(memory.get("conversation"), list) else []
+    started_at = conversation[0].get("timestamp") if conversation and isinstance(conversation[0], dict) else _now_iso()
+    transcript = _transcript_lines(getattr(result, "transcript", []) or [])
+    if not transcript and conversation:
+        transcript = [
+            {
+                "sequence": idx + 1,
+                "speaker_type": str(turn.get("role") or "unknown"),
+                "text": str(turn.get("text") or turn.get("message") or ""),
+                "spoken_at_second": float(idx * 2),
+            }
+            for idx, turn in enumerate(conversation)
+            if isinstance(turn, dict)
+        ]
+    summary = getattr(result, "ai_summary", None) or {}
+    if not isinstance(summary, dict):
+        summary = {}
+    summary_text = str(summary.get("summary") or getattr(result, "response", "") or "")
+    existing = next((call for call in org["calls"] if call.get("session_id") == session_id), None)
+    if existing is None:
+        existing = {
+            "id": closira_store.next_id(org, "calls"),
+            "org_id": org_id,
+            "session_id": session_id,
+            "agent_id": _crm_agent_id(),
+            "assigned_to": _crm_agent_id(),
+            "contact_id": contact_id,
+            "status": "answered",
+            "category": "booking" if memory.get("booking_id") else "inquiry",
+            "is_ai": True,
+            "recording_url": "",
+            "started_at": started_at,
+            "occurred_at": _now_iso(),
+            "live_status": "Answered",
+            "live_duration_seconds": max(len(transcript) * 8, 1),
+            "channel": channel,
+        }
+        org["calls"].append(existing)
+    existing.update(
+        {
+            "contact_id": contact_id,
+            "intent": str(getattr(result, "intent", "") or memory.get("intent") or "Inquiry"),
+            "summary": summary_text,
+            "conversation_summary": summary or {"summary": summary_text},
+            "transcript": transcript,
+            "sentiment": str(memory.get("sentiment") or "neutral"),
+            "occurred_at": _now_iso(),
+            "live_duration_seconds": max(len(transcript) * 8, existing.get("live_duration_seconds", 1)),
+            "category": "booking" if memory.get("booking_id") else existing.get("category", "inquiry"),
+        }
+    )
+    booking_payload = _extract_booking_payload(result)
+    payment_payload = _extract_payment_payload(result)
+    if booking_payload and not any(item.get("external_booking_id") == booking_payload["booking_id"] for item in org["bookings"]):
+        org["bookings"].append(
+            {
+                "id": closira_store.next_id(org, "bookings"),
+                "org_id": org_id,
+                "contact_id": contact_id,
+                "lead_id": None,
+                "assigned_to": _crm_agent_id(),
+                "event_type": str(memory.get("event_type") or "Escape Room"),
+                "location": booking_payload.get("location", ""),
+                "party_size": int(memory.get("participants") or memory.get("company_size") or 0),
+                "event_date": booking_payload.get("date", ""),
+                "total_amount": float((booking_payload.get("price_breakdown") or {}).get("final_price") or 0.0),
+                "paid_amount": 0.0,
+                "payment_status": payment_payload.get("status") or memory.get("paymentStatus") or "UNPAID",
+                "source": channel,
+                "channel": channel,
+                "notes": f"Payment URL: {payment_payload.get('payment_url', '')}",
+                "external_booking_id": booking_payload["booking_id"],
+                "created_at": _now_iso(),
+            }
+        )
+    escalation = getattr(result, "escalation", None) or {}
+    should_escalate = bool(
+        getattr(result, "should_handoff", False)
+        or escalation.get("escalate")
+        or escalation.get("required")
+        or getattr(result, "next_agent", "") == "escalation_agent"
+    )
+    if should_escalate and not any(item.get("session_id") == session_id for item in org["escalations"]):
+        org["escalations"].append(
+            {
+                "id": closira_store.next_id(org, "escalations"),
+                "org_id": org_id,
+                "session_id": session_id,
+                "call_id": existing["id"],
+                "contact_id": contact_id,
+                "assigned_to": _crm_agent_id(),
+                "escalation_status": "open",
+                "target_group": "sales_manager",
+                "reason": str(escalation.get("reason") or "Escalation requested"),
+                "resolution_notes": "",
+                "created_at": _now_iso(),
+                "handoff_summary": getattr(result, "handoff_summary", None) or {},
+                "conversation_summary": summary or {"summary": summary_text},
+                "timeline": getattr(result, "timeline_events", []) or [],
+                "customer_profile": getattr(result, "customer_profile", {}) or {},
+                "action_items": (summary.get("action_items") if isinstance(summary, dict) else []) or [],
+                "sentiment": getattr(result, "sentiment_analysis", {}) or {},
+            }
+        )
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(
@@ -177,6 +789,16 @@ def health() -> HealthResponse:
         booking_provider=booking_provider_label(),
         version=API_VERSION,
     )
+
+
+@app.get("/")
+def web_chat_home() -> FileResponse:
+    return FileResponse(WEB_CHAT_DIR / "index.html")
+
+
+@app.get("/web-chat")
+def web_chat() -> FileResponse:
+    return FileResponse(WEB_CHAT_DIR / "index.html")
 
 
 @app.post("/debug")
@@ -193,6 +815,8 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=400, detail="message cannot be empty.")
 
     runtime = _get_runtime(request.session_id)
+    _mem_before = dict(runtime.inbound.memory.data)   # snapshot BEFORE dispatch
+    _t0 = time.perf_counter()
     with _lock:
         result, booking, active_agent = dispatch(
             message,
@@ -202,9 +826,23 @@ def chat(request: ChatRequest) -> ChatResponse:
         )
         runtime.booking = booking
         runtime.active_agent = active_agent
+    _latency_ms = (time.perf_counter() - _t0) * 1000
+    _mem_after = dict(runtime.inbound.memory.data)    # snapshot AFTER dispatch
+    _dev_trace(request.session_id, message, result, _mem_before, _mem_after, _latency_ms)
+    reporting = _reporting_payload(
+        request.session_id,
+        result,
+        runtime.inbound.memory.data,
+        _latency_ms,
+    )
+    runtime.inbound.memory.save()
     response = ChatResponse(
         response=result.response,
         next_agent=result.next_agent,
+        media=_extract_media_payload(result),
+        booking=_extract_booking_payload(result),
+        payment=_extract_payment_payload(result),
+        price_breakdown=_extract_price_breakdown(result),
         escalation=result.escalation,
         handoff_summary=result.handoff_summary,
         sentiment_analysis=result.sentiment_analysis,
@@ -215,8 +853,76 @@ def chat(request: ChatRequest) -> ChatResponse:
         follow_up_recommendations=result.follow_up_recommendations,
         transcript=result.transcript,
         recording=result.recording,
+        **reporting,
     )
+    _persist_chat_result(request.session_id, runtime, result, channel="web_chat")
     logger.info("CHAT_RESPONSE=%s", _json_log_value(response.model_dump()))
+    return response
+
+
+@app.post("/webhooks/wati", response_model=WhatsAppWebhookResponse)
+@app.post("/api/v1/whatsapp/wati/webhook", response_model=WhatsAppWebhookResponse)
+async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="WATI webhook payload must be a JSON object.")
+    logger.info("WATI_INBOUND_WEBHOOK=%s", _json_log_value(payload))
+
+    phone, message, ignored = _extract_wati_message(payload)
+    if ignored:
+        return WhatsAppWebhookResponse(success=True, ignored=True)
+    message = message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="WhatsApp message text is required.")
+
+    session_id = _whatsapp_session_id(phone)
+    runtime = _get_runtime(session_id)
+    with _lock:
+        runtime.inbound.memory.data["channel"] = "whatsapp"
+        runtime.inbound.memory.data["whatsapp_number"] = "".join(ch for ch in str(phone) if ch.isdigit())
+        runtime.inbound.memory.save()
+        result, booking, active_agent = dispatch(
+            message,
+            runtime.inbound,
+            runtime.booking,
+            runtime.active_agent,
+        )
+        runtime.booking = booking
+        runtime.active_agent = active_agent
+        runtime.inbound.memory.data["channel"] = "whatsapp"
+        runtime.inbound.memory.data["last_whatsapp_inbound"] = {
+            "phone": runtime.inbound.memory.data.get("whatsapp_number", ""),
+            "message": message,
+            "received_at": _now_iso(),
+        }
+        runtime.inbound.memory.save()
+
+    wati_result = WatiClient().send_session_message(
+        phone,
+        result.response,
+        context={
+            "session_id": session_id,
+            "next_agent": result.next_agent,
+            "channel": "whatsapp",
+        },
+    )
+    wati_delivery = wati_result.to_dict()
+    with _lock:
+        runtime.inbound.memory.data["last_whatsapp_reply"] = {
+            "message": result.response,
+            "delivery": wati_delivery,
+            "sent_at": _now_iso(),
+        }
+        runtime.inbound.memory.save()
+
+    response = WhatsAppWebhookResponse(
+        success=True,
+        session_id=session_id,
+        response=result.response,
+        next_agent=result.next_agent,
+        wati=wati_delivery,
+    )
+    logger.info("WATI_WEBHOOK_RESPONSE=%s", _json_log_value(response.model_dump()))
     return response
 
 

@@ -111,7 +111,7 @@ def test_demo_scenario_topic_switch_to_faq_preserves_intake(tmp_path: Path) -> N
     assert "Food options include" in second.response
     assert agent.memory.data["participants"] == 20
     assert agent.memory.data["intent"] == "corporate_event"
-    assert composer.calls[-1]["mode"].value == "faq"
+    assert agent.memory.data["conversation_mode"] == "faq"
 
 
 def test_demo_scenario_recommendation_precedes_qualification(tmp_path: Path) -> None:

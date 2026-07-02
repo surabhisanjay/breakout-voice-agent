@@ -40,6 +40,7 @@ def make_full_memory(tmp_path: Path, **overrides) -> ConversationMemory:
         "first_name": "Priya",
         "last_name": "Sharma",
         "phone": "9876543210",
+        "time_preference": "any",
     })
     mem.data.update(overrides)
     mem.save()
