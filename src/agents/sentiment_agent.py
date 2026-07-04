@@ -29,8 +29,8 @@ class SentimentAgent:
     """Conversation-wide sentiment tracker with legacy one-turn compatibility."""
 
     SIGNALS: tuple[tuple[str, tuple[str, ...], float], ...] = (
-        ("angry", ("unacceptable", "ridiculous", "furious", "very angry", "terrible service", "useless"), 0.94),
-        ("frustrated", ("frustrated", "frustrating", "going in circles", "keep suggesting", "same things", "you keep asking", "not listening", "not understanding", "i already told", "booking is wrong", "my booking is wrong", "want to speak to a human", "speak to a human", "this is wrong", "again and again", "still not working"), 0.88),
+        ("angry", ("unacceptable", "ridiculous", "furious", "very angry", "i am angry", "i'm angry", "angry", "terrible service", "useless"), 0.94),
+        ("frustrated", ("frustrated", "frustrating", "going in circles", "keep suggesting", "same things", "you keep asking", "you keep repeating", "not listening", "not understanding", "i already told", "booking is wrong", "my booking is wrong", "want to speak to a human", "speak to a human", "this is wrong", "this is not helping", "this isn't helping", "not helping", "again and again", "still not working"), 0.88),
         ("confused", ("confused", "don't understand", "do not understand", "what do you mean", "not clear", "unclear"), 0.82),
         ("urgent", ("urgent", "as soon as possible", "asap", "running late", "in a hurry", "right now", "last minute"), 0.84),
         ("hesitant", ("not sure", "maybe", "need to think", "check with", "not ready", "don't confirm", "do not confirm", "in a dilemma"), 0.80),
@@ -146,7 +146,10 @@ class SentimentAgent:
         reasons: list[str] = []
         if correction_count >= 2:
             reasons.append("Repeated corrections")
-        if combined_recent.count("?") >= 3:
+        if combined_recent.count("?") >= 3 and re.search(
+            r"\b(?:confused|unclear|not\s+clear|not\s+helping|not\s+understanding|again|same|already\s+told|going\s+in\s+circles)\b",
+            combined_recent,
+        ):
             reasons.append("Repeated questions")
         if "no no no" in combined_recent:
             reasons.append("Customer interruption or rejection")
@@ -156,7 +159,7 @@ class SentimentAgent:
             reasons.append("Customer reported misunderstanding")
         if "booking is wrong" in combined_recent:
             reasons.append("Customer reported incorrect booking")
-        if "going in circles" in combined_recent or "keep suggesting" in combined_recent or "same things" in combined_recent:
+        if "going in circles" in combined_recent or "keep suggesting" in combined_recent or "keep repeating" in combined_recent or "same things" in combined_recent:
             reasons.append("Repeated recommendation loop")
         if re.search(r"\b(?:forget it|leave it|stop|don't book|do not book|not booking anymore)\b", combined_recent):
             reasons.append("Booking abandonment risk")

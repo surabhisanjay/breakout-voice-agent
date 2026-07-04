@@ -204,7 +204,7 @@ def test_vapi_keeps_escalation_classified_while_collecting_contact_details(
     assert body["escalation"]["trigger"] == "human_request"
     assert body["transfer"] == {
         "required": False,
-        "status": "awaiting_contact_details",
+        "status": "awaiting_customer_name",
         "support_ticket_id": body["escalation"]["support_ticket_id"],
     }
     with analytics_db.get_db_connection() as conn:
@@ -230,7 +230,7 @@ def test_vapi_keeps_escalation_classified_while_collecting_contact_details(
     assert activity_count == 1
 
 
-def test_vapi_collects_split_spoken_phone_during_escalation(
+def test_vapi_escalation_flow_without_phone_prompt(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "")
@@ -248,36 +248,41 @@ def test_vapi_collects_split_spoken_phone_during_escalation(
         "/vapi/tool",
         json={"message": "Can you make me talk to a human first?", "session_id": session_id},
     ).json()
-    partial = client.post(
-        "/vapi/tool",
-        json={
-            "message": "eight two one seven zero zero eight four zero",
-            "session_id": session_id,
-        },
-    ).json()
-    completed = client.post(
-        "/vapi/tool",
-        json={"message": "four zero seven", "session_id": session_id},
-    ).json()
     named = client.post(
         "/vapi/tool",
         json={"message": "Riya", "session_id": session_id},
     ).json()
+    completed = client.post(
+        "/vapi/tool",
+        json={"message": "I want a refund", "session_id": session_id},
+    ).json()
 
-    assert "phone number" in first["response"].lower()
-    assert "first part" in partial["response"].lower()
-    assert partial["escalation"]["escalate"] is True
-    assert "phone number" not in completed["response"].lower()
-    assert "name" in completed["response"].lower()
+    assert "name" in first["response"].lower()
+    assert "phone" not in first["response"].lower()
     assert "anything else" in named["response"].lower()
-    assert completed["escalation"]["reason"] == "Customer explicitly requested a human representative"
-    assert completed["escalation"]["priority"] == "high"
-    assert completed["escalation"]["trigger"] == "human_request"
-    assert completed["escalation"]["support_ticket_id"]
+    assert "is your name riya" in completed["response"].lower()
+
+    consent_prompt = client.post(
+        "/vapi/tool",
+        json={"message": "Yes, that's right", "session_id": session_id},
+    ).json()
+    assert "whatsapp" in consent_prompt["response"].lower()
+
+    consent_completed = client.post(
+        "/vapi/tool",
+        json={"message": "Yes, this number is fine", "session_id": session_id},
+    ).json()
+
+    assert "reach out to you shortly" in consent_completed["response"].lower()
+    assert consent_completed["escalation"]["reason"] == "Customer explicitly requested a human representative"
+    assert consent_completed["escalation"]["priority"] == "high"
+    assert consent_completed["escalation"]["trigger"] == "human_request"
+    assert consent_completed["escalation"]["support_ticket_id"]
     memory = ConversationMemory(session_dir / f"{session_id}.json")
-    assert memory.data["phone"] == "8217008407"
-    assert memory.data["phone_fragment"] == ""
+    assert memory.data["phone"] == "current_number"
+    assert memory.data["whatsapp_followup_phone"] == "8217008407"
     assert memory.data["customer_name"] == "Riya"
+    assert memory.data["escalation_notes"] == "I want a refund"
     assert memory.data["escalation_state"]["trigger"] == "human_request"
     assert memory.data["escalation_state"]["priority"] == "high"
 

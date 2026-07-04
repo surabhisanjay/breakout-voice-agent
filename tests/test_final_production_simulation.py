@@ -27,6 +27,7 @@ def test_random_booking_paths_have_no_loops_false_confirmation_or_memory_loss(
         "booking_started": True, "current_workflow": "booking",
         "participants": 4, "age_group": "adults", "location": "Whitefield",
         "preferred_date": "25 June", "room": "Murder Mystery",
+        "time_preference": "any",
     })
     memory.save()
     agent = BookingAgent(memory)
@@ -37,7 +38,7 @@ def test_random_booking_paths_have_no_loops_false_confirmation_or_memory_loss(
     })
     agent.booking_tool.create = MagicMock(return_value={
         "booking_id": f"booking-{seed}", "booking_reference": f"reference-{seed}",
-        "confirmed": True, "location": "Whitefield", "date": "25 June",
+        "confirmed": True, "status": "RESERVED", "location": "Whitefield", "date": "25 June",
         "slot": "7:00 PM", "participants": 4, "event_type": "Escape Room",
         "customer_name": "Riya Patel", "phone": "9876543210",
     })
@@ -65,7 +66,9 @@ def test_random_booking_paths_have_no_loops_false_confirmation_or_memory_loss(
     assert memory.data["booking_id"] == f"booking-{seed}"
     assert memory.data["booking_ref"] == f"reference-{seed}"
     assert memory.data["customer_name"] == "Riya Patel"
-    assert sum("booking is confirmed" in response.lower() for response in responses) == 1
+    assert sum("reserved your slot" in response.lower() for response in responses) == 1
+    assert sum("confirmed once payment" in response.lower() for response in responses) == 1
+    assert memory.data["booking_status"] == "RESERVED"
     assert all(responses)
 
 

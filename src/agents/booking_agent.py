@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +23,8 @@ from ..response_composer import ResponseComposer
 from ..services.whatsapp_payload import build_wati_booking_payload
 from ..services.wati_client import WatiClient, WatiSendResult
 from ..services.venue_policy import get_venue_policy
+from ..services.recommendation_engine import RecommendationEngine
+from ..services.price_breakdown import price_breakdown_from_totals
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ class BookingRecord:
 class BookingAgent:
     _ESCAPE_ROOM_NAMES = {
         "murder mystery", "hostage", "classified", "bomb defusal", "bomb diffusal",
-        "prison break", "undercover", "curse of the pharaoh",
+        "prison break", "missile attack", "undercover", "curse of the pharaoh",
         "the wizarding championship", "the forbidden forest",
     }
     # Internal conversation states
@@ -71,6 +73,8 @@ class BookingAgent:
     _STATE_WAITING_FOR_LAST_NAME = "waiting_for_last_name"
     _STATE_WAITING_FOR_PHONE = "waiting_for_phone"
     _STATE_READY_FOR_BOOKING = "ready_for_booking"
+    _STATE_WAITING_FOR_TIME_PREFERENCE = "waiting_for_time_preference"
+    _STATE_WAITING_FOR_SLOT_CONFIRMATION = "waiting_for_slot_confirmation"
     _STATE_WAITING_FOR_ALT_DATE = "waiting_for_alt_date"
     _STATE_BOOKING_CONFIRMED = "booking_confirmed"
     _STATE_CLOSED = "closed"
@@ -157,6 +161,19 @@ class BookingAgent:
         message = self.memory.apply_reference_aliases(
             self.memory.normalize_entity_aliases(message)
         )
+        if self._escalation_locked():
+            start_turn = time.time()
+            self.memory.add_turn("customer", message)
+            response = "I've already handed this over to our team. They'll be able to help with that and the rest of the context in one go."
+            self.memory.add_turn("agent", response)
+            return AgentResponse(
+                response=response,
+                intent=str(self.memory.data.get("intent") or "general_faq"),
+                next_agent="escalation_agent",
+                should_handoff=True,
+                state=self.memory.as_state(),
+                escalation=dict(self.memory.data.get("escalation_state") or {}),
+            )
         start_turn = time.time()
         self.memory.add_turn("customer", message)
 
@@ -174,6 +191,14 @@ class BookingAgent:
         lowered = message.lower()
         normalized_lowered = self.memory.normalize_number_words(message).lower()
 
+        if self._is_payment_link_request(lowered):
+            response, booking_result = self._handle_payment_link_request()
+            return self._finalize_response(response, message, start_turn, booking_result)
+
+        if self._is_payment_status_request(lowered):
+            response, booking_result = self._handle_payment_status_request()
+            return self._finalize_response(response, message, start_turn, booking_result)
+
         if self._is_name_lookup(lowered):
             stored_name = str(self.memory.data.get("customer_name", "")).strip()
             if stored_name:
@@ -190,6 +215,7 @@ class BookingAgent:
             "classified": "Classified",
             "bomb defusal": "Bomb Defusal",
             "prison break": "Prison Break",
+            "missile attack": "Missile Attack",
             "undercover": "Undercover",
             "curse of the pharaoh": "Curse of the Pharaoh",
             "the wizarding championship": "The Wizarding Championship",
@@ -204,7 +230,9 @@ class BookingAgent:
         if not target_room:
             target_room = self.memory._extract_room(lowered)
 
-        # Check for location, participants, or date modification
+        # Check for location, participants, date, or time modification
+        slot_input = self._extract_slot(message)
+        ambiguous_time_reference = self._ambiguous_bare_time_reference(message)
         target_location = self.memory._extract_location(lowered)
         participant_range = self.memory._extract_participant_range(normalized_lowered)
         target_participants = (
@@ -212,6 +240,16 @@ class BookingAgent:
             if participant_range
             else self.memory._extract_participants(normalized_lowered)
         )
+        if (
+            slot_input
+            and target_participants
+            and not participant_range
+            and not re.search(
+                r"\b(?:people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues|of us|group)\b",
+                normalized_lowered,
+            )
+        ):
+            target_participants = ""
         target_date = self.memory._extract_preferred_date(message)
         target_phone = self.memory._extract_phone(message)
         old_room = self.memory.data.get("room")
@@ -220,8 +258,9 @@ class BookingAgent:
         old_participants = self.memory.data.get("participants")
         from .qualification_agent import QualificationAgent
         has_explicit_name_signal = bool(
-            re.search(
-                r"\b(?:name\s*:|name\s+|my first name is|my name is|i am|i'm|this is|book under|actually\s+(?:use|make it|change(?:\s+it)?\s+to))\b",
+            re.search(r"\bname\s*:", lowered)
+            or re.search(
+                r"\b(?:name\s+|my first name is|my name is|i am|i'm|this is|book under|actually\s+(?:use|make it|change(?:\s+it)?\s+to))\b",
                 lowered,
             )
         )
@@ -233,8 +272,13 @@ class BookingAgent:
                 and not target_location
                 and not target_date
                 and not target_participants
+                and not slot_input
             )
-            or self._state in (self._STATE_WAITING_FOR_FIRST_NAME, self._STATE_WAITING_FOR_LAST_NAME)
+            or (
+                self._state in (self._STATE_WAITING_FOR_FIRST_NAME, self._STATE_WAITING_FOR_LAST_NAME)
+                and not slot_input
+                and not target_phone
+            )
             else ""
         )
         if (
@@ -289,6 +333,14 @@ class BookingAgent:
                 "how does cancellation", "can bookings be cancelled",
             )
         )
+        is_reschedule_policy_question = bool(
+            re.search(
+                r"\b(?:reschedul(?:e|ing)|postpon(?:e|ing))\b",
+                lowered,
+            )
+        ) and not bool(
+            re.search(r"\b(?:reschedul(?:e|ing)|postpon(?:e|ing))\b.{0,30}\b(?:my|the|this)\s+(?:booking|reservation)\b", lowered)
+        )
         is_cancel_request = bool(
             re.search(
                 r"\b(?:cancel|delete)\s+(?:my\s+|the\s+|this\s+)?(?:booking|reservation|appointment|slot)\b",
@@ -304,9 +356,24 @@ class BookingAgent:
             "which is best", "which one is best", "what is best", "what's best",
         }
 
-        slot_input = self._extract_slot(message)
-        if slot_input and slot_input != self.memory.data.get("preferred_time"):
+        is_closest_slot_reference = bool(re.search(r"\b(?:closest|nearest)\b", lowered))
+        if ambiguous_time_reference:
+            self.memory.data["preferred_time"] = ""
+            self.memory.data["requested_time"] = ""
+            if self.memory.data.get("time_preference") == "specific":
+                self.memory.data["time_preference"] = ""
+            self.memory.save()
+        if (
+            slot_input
+            and not self._slot_outside_operating_window(slot_input)
+            and not is_closest_slot_reference
+            and slot_input != self.memory.data.get("preferred_time")
+        ):
             self.memory.set_field("preferred_time", slot_input, message, expected_field="preferred_time")
+            self.memory.data["requested_time"] = slot_input
+            self.memory.data["time_preference"] = "specific"
+            self.memory.save()
+        self._capture_time_preference(message)
 
         # Check if any field is different from the memory snapshot at the
         # start of the turn. Some fields are persisted above by design.
@@ -315,22 +382,28 @@ class BookingAgent:
         date_changed = bool(target_date and target_date != old_date)
 
         any_field_changed = room_changed or location_changed or participants_changed or date_changed
+        clean_room_correction = bool(
+            target_room
+            and re.match(r"^\s*(?:no|nah|nope)(?:[\s,.-]+(?:no|nah|nope))*[\s,.-]+", lowered)
+        )
         
         is_change_request = any_field_changed and (
             any(w in lowered for w in ("actually", "correct", "change", "instead", "switch", "want", "prefer", "rather", "choose", "update", "modify", "reschedule", "now", "different")) or
+            clean_room_correction or
             participants_changed
             or self._state in (self._STATE_WAITING_FOR_SLOT, self._STATE_WAITING_FOR_ALT_DATE)
         )
 
         is_slot_availability_question = bool(
             slot_input
-            and re.search(r"\b(?:available|availability|free|open)\b", lowered)
+            and re.search(r"\b(?:available|availability|free|open|search|check|slots?|slot)\b", lowered)
+            and not re.search(r"\b(?:actually|change|switch|instead|rather|make it|update|modify|reschedule|use)\b", lowered)
         )
         is_price_question = bool(
             re.search(r"\b(?:price|pricing|cost|costs|rate|rates|how much)\b", lowered)
         )
         is_discount_question = bool(
-            re.search(r"\b(?:discount|offers?|coupon|promo|deal|membership)\b", lowered)
+            re.search(r"\b(?:discounts?|offers?|coupon|promo|deal|membership)\b", lowered)
         )
         is_slot_summary_question = self._is_slot_summary_question(lowered)
         is_slot_fallback_question = bool(
@@ -342,6 +415,7 @@ class BookingAgent:
         explicit_change_words = bool(
             re.search(r"\b(?:actually|change|switch|instead|rather|make it|update|modify|reschedule|use)\b", lowered)
         )
+        explicit_change_words = explicit_change_words or clean_room_correction
         explicit_slot_change = bool(
             slot_input
             and explicit_change_words
@@ -350,11 +424,13 @@ class BookingAgent:
         explicit_room_change = bool(
             target_room
             and explicit_change_words
+            and not (location_changed or participants_changed or date_changed)
             and self._state in (self._STATE_WAITING_FOR_SLOT, self._STATE_WAITING_FOR_ALT_DATE, self._STATE_CHECKING_AVAILABILITY)
         )
         explicit_date_change = bool(
             target_date
             and explicit_change_words
+            and not (room_changed or location_changed or participants_changed)
             and self._state in (self._STATE_WAITING_FOR_SLOT, self._STATE_WAITING_FOR_ALT_DATE, self._STATE_CHECKING_AVAILABILITY)
         )
 
@@ -370,7 +446,10 @@ class BookingAgent:
             booking_result = None
 
         elif is_slot_summary_question:
-            response = self._slot_summary_response(message)
+            if not self._available_slots:
+                response, _ = self._handle_availability_check()
+            else:
+                response = self._slot_summary_response(message)
             booking_result = None
 
         elif explicit_room_change:
@@ -388,28 +467,11 @@ class BookingAgent:
             booking_result = None
 
         elif is_slot_availability_question:
-            matched = self._match_slot(slot_input, self._available_slots)
-            room = str(self.memory.data.get("room", "the room"))
-            location = str(self.memory.data.get("location", "the selected location"))
-            date = str(self.memory.data.get("preferred_date", "the selected date"))
-            if matched:
-                response = f"Yes, {matched} is available for {room} at {location} on {date}."
-            else:
-                nearest = self._nearest_slots(slot_input, self._available_slots, limit=3)
-                self.memory.data["last_suggested_slots"] = nearest
-                self.memory.save()
-                slots_text = self._format_slots(nearest or self._available_slots)
-                response = (
-                    f"No, {slot_input} is not in the cached availability for {room} at {location} on {date}. "
-                    f"The nearest available slots are {slots_text}."
-                )
+            response = self._direct_slot_availability_response(slot_input)
             booking_result = None
 
         elif is_discount_question:
-            response = (
-                "I don't have confirmed discount information from the booking system right now, "
-                "but I can continue with the booking and our team can confirm the final amount."
-            )
+            response = self._append_booking_resume(self._discount_answer())
             booking_result = None
 
         elif explicit_slot_change:
@@ -418,14 +480,19 @@ class BookingAgent:
             self.memory.data["selected_slot"] = matched
             self.memory.data["slot_confirmed"] = True
             self.memory.save()
-            response = f"Sure, I've updated your slot to {matched}."
-            booking_result = None
+            if not self.memory.data.get("customer_name"):
+                self._state = self._STATE_WAITING_FOR_FIRST_NAME
+                response = f"Sure, I've updated your slot to {matched}. May I have your name?"
+                booking_result = None
+            elif not self.memory.data.get("phone"):
+                self._state = self._STATE_WAITING_FOR_PHONE
+                response = f"Sure, I've updated your slot to {matched}. Could you share the phone number for the booking?"
+                booking_result = None
+            else:
+                response, booking_result = self._prepare_selected_booking(matched)
 
         elif is_price_question:
-            response = (
-                "I don't have exact pricing from the booking system right now, but I can continue "
-                "with the booking and our team can confirm the final amount."
-            )
+            response = self._append_booking_resume(self._price_answer())
             booking_result = None
 
         elif self.memory.data.get("pending_policy_explanation") and is_affirmative_follow_up:
@@ -442,6 +509,10 @@ class BookingAgent:
             self.memory.data["pending_policy_explanation"] = False
             self.memory.save()
             response = self._append_booking_resume(self._cancellation_policy_explanation())
+            booking_result = None
+
+        elif is_reschedule_policy_question:
+            response = self._append_booking_resume(self._reschedule_policy_explanation())
             booking_result = None
 
         elif is_cancel_request:
@@ -496,6 +567,11 @@ class BookingAgent:
                 response = f"{ack}What date would you like to visit?"
                 booking_result = None
                 availability = None
+            elif not self._has_time_preference():
+                self._state = self._STATE_WAITING_FOR_TIME_PREFERENCE
+                response = f"{ack}{self._time_preference_question()}"
+                booking_result = None
+                availability = None
             else:
                 availability = self.availability_tool.check(location, date, participants)
                 self._last_availability = availability
@@ -507,9 +583,7 @@ class BookingAgent:
                 self._available_slots = self._visible_slots(availability)
                 self._state = self._STATE_WAITING_FOR_SLOT
                 if self._available_slots:
-                    slots_text = self._format_slots(self._available_slots)
-                    period = self._period_label_prefix()
-                    response = f"{ack}For {date} at {location}, I found {period}slots at {slots_text} for {participants} players. Which time works best for you?"
+                    response = f"{ack}{self._availability_slots_response(date, location, participants)}"
                 else:
                     response = f"{ack}I found availability on {date} at {location}, but no verified {self.memory.data.get('preferred_period')} slots for {participants} players. Could you share another time window?"
             elif availability is not None:
@@ -519,16 +593,26 @@ class BookingAgent:
             booking_result = None
         else:
             age_input = self.memory._extract_age_group(lowered, allow_bare_range=True)[0]
+            is_slot_confirmation_response = (
+                self._state == self._STATE_WAITING_FOR_SLOT_CONFIRMATION
+                and (
+                    self._is_generic_slot_confirmation(lowered)
+                    or self._is_negative_slot_confirmation(lowered)
+                    or bool(slot_input)
+                )
+            )
             actionable_state_input = (
                 (self._state == self._STATE_WAITING_FOR_SLOT and bool(slot_input))
+                or is_slot_confirmation_response
                 or (self._state == self._STATE_WAITING_FOR_AGE and bool(age_input))
                 or (self._state == self._STATE_WAITING_FOR_FIRST_NAME and bool(target_name))
                 or (self._state == self._STATE_WAITING_FOR_LAST_NAME and bool(target_name))
                 or (self._state == self._STATE_WAITING_FOR_PHONE and bool(target_phone))
                 or (self._state == self._STATE_WAITING_FOR_ALT_DATE and bool(target_date))
+                or (self._state == self._STATE_WAITING_FOR_TIME_PREFERENCE and self._has_time_preference())
             )
             if actionable_state_input:
-                if self._state == self._STATE_WAITING_FOR_SLOT:
+                if self._state in (self._STATE_WAITING_FOR_SLOT, self._STATE_WAITING_FOR_SLOT_CONFIRMATION):
                     response, booking_result = self._handle_slot_selection(message)
                 elif self._state == self._STATE_WAITING_FOR_AGE:
                     response, booking_result = self._handle_age_group(message)
@@ -538,16 +622,46 @@ class BookingAgent:
                     response, booking_result = self._handle_contact_last_name(message)
                 elif self._state == self._STATE_WAITING_FOR_PHONE:
                     response, booking_result = self._handle_contact_phone(message)
+                elif self._state == self._STATE_WAITING_FOR_TIME_PREFERENCE:
+                    response, booking_result = self._handle_availability_check()
                 else:
                     response, booking_result = self._handle_alt_date(message)
                 return self._finalize_response(response, message, start_turn, booking_result)
 
-            # Check for general FAQ / room explanations (interruption). Once
-            # booking owns the workflow, missing-field and tool progression win.
+            if self._is_waiting_for_booking_detail() and (target_name or target_phone):
+                response, booking_result = self._continue_booking_detail_collection()
+                return self._finalize_response(response, message, start_turn, booking_result)
+
+            if ambiguous_time_reference:
+                response = self._append_booking_resume(
+                    f"Just to confirm, do you mean {ambiguous_time_reference} PM? I won't use an AM time unless you say AM clearly."
+                )
+                booking_result = None
+                return self._finalize_response(response, message, start_turn, booking_result)
+
+            unknown_room_name = self._unknown_room_selection_name(message)
+            if unknown_room_name:
+                response = self._append_booking_resume(
+                    self._unknown_room_selection_response(unknown_room_name)
+                )
+                booking_result = None
+                return self._finalize_response(response, message, start_turn, booking_result)
+
+            # Check for general FAQ / room explanations (interruption) before
+            # re-asking the active state prompt. This keeps benign questions
+            # from being treated as failed answers to the pending field.
             from ..knowledge.demo_knowledge import get_demo_answer
-            booking_started = bool(self.memory.data.get("booking_started"))
+            booking_started = bool(self.memory.data.get("booking_started")) or self._state in (
+                self._STATE_WAITING_FOR_TIME_PREFERENCE,
+                self._STATE_WAITING_FOR_SLOT,
+                self._STATE_WAITING_FOR_SLOT_CONFIRMATION,
+                self._STATE_WAITING_FOR_AGE,
+                self._STATE_WAITING_FOR_FIRST_NAME,
+                self._STATE_WAITING_FOR_LAST_NAME,
+                self._STATE_WAITING_FOR_PHONE,
+            )
             if booking_started:
-                interruption_answer = self._booking_faq_answer(message) if self._is_booking_faq(message) else None
+                interruption_answer = self._booking_interruption_answer(message)
             elif "food" in lowered:
                 interruption_answer = self._food_faq_answer(message)
             else:
@@ -564,7 +678,14 @@ class BookingAgent:
                     if requested_slot and self._state == self._STATE_WAITING_FOR_SLOT:
                         response, booking_result = self._handle_slot_selection(message)
 
-                elif self._state == self._STATE_WAITING_FOR_SLOT:
+                elif self._state == self._STATE_WAITING_FOR_TIME_PREFERENCE:
+                    if self._has_time_preference():
+                        response, booking_result = self._handle_availability_check()
+                    else:
+                        response = self._time_preference_question()
+                        booking_result = None
+
+                elif self._state in (self._STATE_WAITING_FOR_SLOT, self._STATE_WAITING_FOR_SLOT_CONFIRMATION):
                     # Bug 5 guard: if slot is already confirmed and customer sends a bare
                     # affirmative ("yes", "ok", "sure"), do NOT re-ask for slot selection.
                     # Advance to the next required field instead.
@@ -615,6 +736,14 @@ class BookingAgent:
 
         return self._finalize_response(response, message, start_turn, booking_result)
 
+    def _escalation_locked(self) -> bool:
+        state = self.memory.data.get("escalation_state") or {}
+        return bool(
+            isinstance(state, dict)
+            and state.get("escalate")
+            and str(state.get("status") or "").lower() not in {"resolved", "closed"}
+        )
+
     def _finalize_response(
         self,
         response: str,
@@ -658,6 +787,10 @@ class BookingAgent:
         # Determine next expected field
         if self._state == self._STATE_WAITING_FOR_SLOT:
             next_field = "slot_selection"
+        elif self._state == self._STATE_WAITING_FOR_SLOT_CONFIRMATION:
+            next_field = "slot_confirmation"
+        elif self._state == self._STATE_WAITING_FOR_TIME_PREFERENCE:
+            next_field = "preferred_time"
         elif self._state == self._STATE_WAITING_FOR_AGE:
             next_field = "age_group"
         elif self._state == self._STATE_WAITING_FOR_FIRST_NAME:
@@ -721,11 +854,33 @@ class BookingAgent:
         if not location:
             return self._missing_field_response("location"), None
         if not self.memory.data.get("room") and self.memory.data.get("intent") == "escape_room_inquiry":
-            return "Which escape room would you like to book?", None
+            recommended = str(self.memory.data.get("recommended_option") or "").strip()
+            if not recommended:
+                try:
+                    recommendation = RecommendationEngine.deterministic_fallback("recommend a room", self.memory.data)
+                    recommended = str(getattr(recommendation, "option", "") or "").strip()
+                except Exception:
+                    recommended = ""
+            if not recommended:
+                recommended = "Murder Mystery"
+            self.memory.set_field("recommended_option", recommended, expected_field="recommended_option")
+            self.memory.data["last_discussed_topic"] = "rooms"
+            discussed = list(self.memory.data.get("discussed_options") or [])
+            if recommended not in discussed:
+                discussed.append(recommended)
+                self.memory.data["discussed_options"] = discussed[-5:]
+            self.memory.save()
+            return (
+                f"Based on your details, I'd recommend {recommended}. "
+                f"Would you like to book {recommended}, or hear another recommendation?"
+            ), None
         if not date:
             return self._missing_field_response("preferred_date"), None
         if self._is_package_inquiry():
             return self._start_event_coordination(), None
+        if not self._has_time_preference():
+            self._state = self._STATE_WAITING_FOR_TIME_PREFERENCE
+            return self._time_preference_question(), None
 
         # === TOOL CALL FIRST ===
         availability = self.availability_tool.check(location, date, participants)
@@ -748,24 +903,57 @@ class BookingAgent:
                     f"I found availability at {location} on {date}, but no verified {period} slots for "
                     f"{participants} players. {follow_up}"
                 ), None
-            persisted_slot = str(self.memory.data.get("selected_slot") or self.memory.data.get("preferred_time") or "")
+            persisted_slot = str(self.memory.data.get("selected_slot") or "")
             if persisted_slot and self._match_slot(persisted_slot, self._available_slots):
                 return self._handle_slot_selection(persisted_slot)
-            slots_text = self._format_slots(self._available_slots)
-            name = str(self.memory.data.get("customer_name", ""))
-            greeting = f"Thank you{', ' + name if name else ''}. " if name else ""
-            period = self._period_label_prefix()
-            return (
-                f"{greeting}I've checked availability for {date} at {location}. "
-                f"We have {period}slots at {slots_text}. "
-                f"Which time works best for you?"
-            ), None
+            return self._availability_slots_response(date, location, participants), None
         else:
             self._state = self._STATE_WAITING_FOR_ALT_DATE
             return (
                 f"I'm sorry, we don't have availability at {location} on {date}. "
                 f"Could you share an alternative date you'd be comfortable with?"
             ), None
+
+    def _direct_slot_availability_response(self, slot_input: str) -> str:
+        """Answer cold-start slot questions by hydrating availability before reading slot cache."""
+        if self._slot_outside_operating_window(slot_input):
+            return self._outside_hours_response(slot_input)
+
+        if not self._available_slots:
+            location = str(self.memory.data.get("location") or "").strip()
+            room = str(self.memory.data.get("room") or "").strip()
+            date = str(self.memory.data.get("preferred_date") or "").strip()
+            if location and room and date:
+                response, _ = self._handle_availability_check()
+                return response
+            if not location:
+                return (
+                    f"I can check {slot_input} directly. Which Breakout location are you planning to visit: "
+                    "Whitefield, Koramangala, or JP Nagar?"
+                )
+            if not room:
+                return f"I can check {slot_input} at {location}. Which escape room should I check?"
+            return f"I can check {slot_input} for that room. What date should I use?"
+
+        matched = self._match_slot(slot_input, self._available_slots)
+        room = str(self.memory.data.get("room") or "the room")
+        location = str(self.memory.data.get("location") or "the selected location")
+        date = str(self.memory.data.get("preferred_date") or "the selected date")
+        if matched:
+            return f"Yes, {matched} is available for {room} at {location} on {date}."
+        nearest = self._nearest_slots(slot_input, self._available_slots, limit=3)
+        self.memory.data["last_suggested_slots"] = nearest
+        self.memory.save()
+        slots_text = self._format_slots(nearest)
+        if nearest:
+            return (
+                f"I couldn't find exactly {slot_input} for {room} at {location} on {date}. "
+                f"The closest available slots are {slots_text}. Which would you prefer?"
+            )
+        return (
+            f"I couldn't find {slot_input} for {room} at {location} on {date}. "
+            "Could you share another time window?"
+        )
 
     def _handle_slot_selection(self, message: str) -> tuple[str, dict | None]:
         """
@@ -775,11 +963,45 @@ class BookingAgent:
             self._state = self._STATE_CHECKING_AVAILABILITY
             return "Before I check available time slots, what date would you like to visit?", None
 
-        chosen = self._extract_slot(message)
+        lowered_msg = message.lower()
+        pending_slot = str(self.memory.data.get("pending_slot_confirmation") or "").strip()
+        chosen = ""
+        if pending_slot:
+            if self._is_affirmative_slot_confirmation(lowered_msg):
+                chosen = pending_slot
+                self.memory.data["pending_slot_confirmation"] = ""
+                self.memory.save()
+            elif self._is_negative_slot_confirmation(lowered_msg):
+                self.memory.data["pending_slot_confirmation"] = ""
+                self.memory.save()
+                self._state = self._STATE_WAITING_FOR_SLOT
+                slots_text = self._format_slots(self.memory.data.get("last_suggested_slots") or self._available_slots)
+                return f"No problem. The available slots are {slots_text}. Which time would you prefer?", None
+            else:
+                self.memory.data["pending_slot_confirmation"] = ""
+                self.memory.save()
+        closest_slot_phrases = (
+            "closest", "nearest", "closest one", "nearest one",
+            "take the closest", "take nearest", "closest option", "nearest option",
+        )
+        is_closest_reference = any(phrase in lowered_msg for phrase in closest_slot_phrases)
+        raw_extracted_slot = self._extract_slot(message)
+        if not chosen and is_closest_reference and self._available_slots:
+            suggested = [
+                slot for slot in self.memory.data.get("last_suggested_slots", [])
+                if isinstance(slot, str) and self._match_slot(slot, self._available_slots)
+            ]
+            if suggested:
+                chosen = suggested[0]
+            elif raw_extracted_slot and not re.search(r"\b(?:closest|nearest|the)\s+one\b", lowered_msg):
+                nearest = self._nearest_slots(raw_extracted_slot, self._available_slots, limit=1)
+                chosen = nearest[0] if nearest else ""
+        if not chosen:
+            chosen = raw_extracted_slot
 
-        if chosen and self._available_slots and re.search(
+        if chosen and not is_closest_reference and self._available_slots and re.search(
             r"\b(?:closest|nearest|whichever\s+is\s+(?:close|closest|nearest))\b",
-            message.lower(),
+            lowered_msg,
         ):
             matched_or_nearest = self._match_slot(chosen, self._available_slots)
             if not matched_or_nearest:
@@ -787,6 +1009,17 @@ class BookingAgent:
                 matched_or_nearest = nearest[0] if nearest else ""
             if matched_or_nearest:
                 chosen = matched_or_nearest
+
+        # Handle "closest/nearest one" after we have just suggested nearest slots.
+        if not chosen and self._available_slots:
+            if is_closest_reference:
+                preferred = str(
+                    self.memory.data.get("preferred_time")
+                    or self.memory.data.get("requested_time")
+                    or ""
+                )
+                nearest = self._nearest_slots(preferred, self._available_slots, limit=1) if preferred else []
+                chosen = nearest[0] if nearest else ""
 
         # Handle "first available", "first slot", "earliest one", ordinal phrasing
         if not chosen and self._available_slots:
@@ -800,18 +1033,17 @@ class BookingAgent:
                 chosen = self._extract_slot(earliest)
                 if not chosen:
                     chosen = earliest
-            elif (
-                lowered_msg.strip(" .!?") in {"that works", "works", "works for me", "let's do it", "lets do it", "okay", "ok"}
-                or "that works" in lowered_msg
-                or "let's do it" in lowered_msg
-                or "lets do it" in lowered_msg
-            ):
+            elif self._is_generic_slot_confirmation(lowered_msg):
                 suggested = [
                     slot for slot in self.memory.data.get("last_suggested_slots", [])
-                    if isinstance(slot, str)
+                    if isinstance(slot, str) and self._match_slot(slot, self._available_slots)
                 ]
                 if suggested:
-                    chosen = suggested[0]
+                    slot_to_confirm = suggested[0]
+                    self.memory.data["pending_slot_confirmation"] = slot_to_confirm
+                    self.memory.save()
+                    self._state = self._STATE_WAITING_FOR_SLOT_CONFIRMATION
+                    return f"Just to confirm, would you like the {slot_to_confirm} slot?", None
 
         if not chosen:
             slots_text = self._format_slots(self._available_slots)
@@ -819,15 +1051,13 @@ class BookingAgent:
                 f"Sorry, I didn't catch that. The available slots are {slots_text}. "
                 f"Which time would you prefer?"
             ), None
+        if self._slot_outside_operating_window(chosen):
+            return self._outside_hours_response(chosen), None
 
         # Fuzzy-match: accept "3 PM", "3:00 pm", "three pm"
         matched = self._match_slot(chosen, self._available_slots)
         if not matched:
             nearest = self._nearest_slots(chosen, self._available_slots, limit=3)
-            if re.search(r"\b(?:around|about)\b", message.lower()):
-                preferred = self.select_evening_slot(self._available_slots)
-                if preferred:
-                    nearest = [preferred, *[slot for slot in nearest if slot != preferred]][:3]
             self.memory.data["last_suggested_slots"] = nearest
             self.memory.save()
             slots_text = self._format_slots(nearest or self._available_slots)
@@ -838,6 +1068,7 @@ class BookingAgent:
 
         self._selected_slot = matched
         self.memory.data["selected_slot"] = matched
+        self.memory.data["pending_slot_confirmation"] = ""
         # Mark slot as confirmed so we never re-ask for confirmation on subsequent affirmatives
         self.memory.data["slot_confirmed"] = True
         self.memory.save()
@@ -874,6 +1105,22 @@ class BookingAgent:
     def _handle_contact_first_name(self, message: str) -> tuple[str, dict | None]:
         from .qualification_agent import QualificationAgent
 
+        repeated_slot = self._extract_slot(message)
+        if repeated_slot:
+            matched = self._match_slot(repeated_slot, self._available_slots) or self._selected_slot or repeated_slot
+            if matched:
+                self._selected_slot = matched
+                self.memory.data["selected_slot"] = matched
+                self.memory.data["slot_confirmed"] = True
+                self.memory.save()
+            return f"I have {matched or 'that slot'} saved. May I have your name?", None
+        phone = self.memory._extract_phone(message)
+        if phone:
+            self.memory.set_field("phone", phone, message, expected_field="phone")
+            if self.memory.data.get("customer_name"):
+                self._state = self._STATE_READY_FOR_BOOKING
+                return self._prepare_selected_booking(self._selected_slot)
+            return "I've saved that phone number. May I have the booking name?", None
         if self._declines_last_name(message) and self.memory.data.get("customer_name"):
             if self.memory.data.get("phone"):
                 self._state = self._STATE_READY_FOR_BOOKING
@@ -949,7 +1196,7 @@ class BookingAgent:
         missing = self._booking_gate_missing_fields()
         if missing:
             logger.warning("BOOKING_GATE_MISSING_FIELDS=%s", missing)
-            return f"I still need your {self._spoken_field(missing[0])} before I can prepare the booking.", None
+            return self._next_booking_detail_prompt(prefix="Got it. "), None
         logger.info("BOOKING_GATE_PASSED=true slot=%s", matched)
 
         self._state = self._STATE_READY_FOR_BOOKING
@@ -969,8 +1216,27 @@ class BookingAgent:
         self.memory.data["booking_id"] = booking_id
         self.memory.data["booking_ref"] = booking_reference
         self.memory.data["booking_order_id"] = str(booking_result.get("order_id") or "")
-        booking_status = str(booking_result.get("status") or "CONFIRMED").upper()
+        self.memory.data["order_id"] = str(booking_result.get("order_id") or "")
+        self.memory.data["orderId"] = str(booking_result.get("order_id") or "")
+        self.memory.data["venue_id"] = str(booking_result.get("venue_id") or self.memory.data.get("venue_id") or "")
+        self.memory.data["venueId"] = self.memory.data["venue_id"]
+        booking_status = str(booking_result.get("status") or "RESERVED").upper()
         self.memory.data["booking_status"] = booking_status
+        self.memory.data["bookingStatus"] = booking_status
+        payment_status = str(booking_result.get("payment_status") or ("PAID" if booking_status == "CONFIRMED" else "UNPAID")).upper()
+        self.memory.data["payment_status"] = payment_status
+        self.memory.data["paymentStatus"] = payment_status
+        payment_url = str(booking_result.get("payment_url") or "")
+        payment_deadline = str(booking_result.get("payment_deadline") or "")
+        self.memory.data["payment_url"] = payment_url
+        self.memory.data["paymentUrl"] = payment_url
+        self.memory.data["payment_deadline"] = payment_deadline
+        self.memory.data["paymentDeadline"] = payment_deadline
+        self.memory.data["email_notification_sent"] = bool(booking_result.get("email_notification_sent", False))
+        self.memory.data["emailNotificationSent"] = bool(booking_result.get("email_notification_sent", False))
+        self.memory.data["whatsapp_notification_sent"] = bool(booking_result.get("whatsapp_notification_sent", False))
+        self.memory.data["whatsappNotificationSent"] = bool(booking_result.get("whatsapp_notification_sent", False))
+        self._capture_price_breakdown(booking_result)
         whatsapp_payload = build_wati_booking_payload(self.memory.data, booking_result)
         try:
             wati_result = WatiClient().send_booking_payment_link(whatsapp_payload)
@@ -991,17 +1257,10 @@ class BookingAgent:
         whatsapp_payload["wati_send"] = whatsapp_delivery
         booking_result["whatsapp"] = whatsapp_delivery
         self.memory.data["payment_link"] = whatsapp_payload.get("payment_link", "")
+        self.memory.data["payment_url"] = whatsapp_payload.get("payment_link", "")
+        self.memory.data["paymentUrl"] = whatsapp_payload.get("payment_link", "")
         self.memory.data["whatsapp_payload"] = whatsapp_payload
         self.memory.data["whatsapp_delivery"] = whatsapp_delivery
-
-        from src.integrations.whatsapp import WhatsAppClient
-        whatsapp_result = WhatsAppClient().send_booking_confirmation(
-            str(self.memory.data.get("phone", "")),
-            {**booking_result, "slot": matched},
-        )
-        booking_result["whatsapp_confirmation"] = whatsapp_result.to_dict()
-        self.memory.data["whatsapp_confirmation"] = whatsapp_result.to_dict()
-
         self.memory.save()
         logger.info("BOOKING_ID=%s", booking_id)
         logger.info("BOOKING_REF=%s", self.memory.data["booking_ref"])
@@ -1012,25 +1271,40 @@ class BookingAgent:
         participants = booking_result["participants"]
         name = str(self.memory.data.get("customer_name", ""))
 
-        if booking_status in {"PAYMENT_PENDING", "PENDING"}:
-            logger.info("PAYMENT_PENDING=true bookingId=%s", booking_id)
+        if booking_status in {"RESERVED", "PAYMENT_PENDING", "PENDING"}:
+            logger.info("PAYMENT_RESERVED=true bookingId=%s", booking_id)
+            self.memory.data["current_workflow"] = "BOOKING_PENDING_PAYMENT"
+            self.memory.data["booking_phase"] = "BOOKING_PENDING_PAYMENT"
+            self.memory.save()
             room = str(self.memory.data.get("room") or booking_result.get("room") or "your room")
+            price = self.memory.data.get("price_breakdown") or {}
+            price_note = (
+                f" Total price: {price.get('currency', 'INR')} {price['final_price']}."
+                if price.get("final_price") is not None
+                else ""
+            )
             return (
-                f"I've reserved your slot — {room} at {location}, {date.lower()} at {matched}. "
+                f"I've reserved your slot — {room} at {location}, {date} at {matched}. "
+                f"Booking ID {booking_id}. Reference {booking_reference}. "
+                f"{price_note} "
                 "Sending the payment link to your WhatsApp — valid for 15 minutes. "
-                "Booking confirmed once paid."
+                "Your booking will be confirmed once payment is completed. "
+                "I can also help with food options, parking, or arrival guidance."
             ), booking_result
 
         if booking_result.get("confirmed"):
+            self.memory.data["current_workflow"] = "BOOKING_PENDING_PAYMENT"
+            self.memory.data["booking_phase"] = "BOOKING_PENDING_PAYMENT"
+            self.memory.save()
             return (
                 f"Perfect{', ' + name if name else ''}. "
-                f"Your booking is confirmed. "
+                f"Your booking has been reserved. "
                 f"{participants} {'guest' if str(participants) == '1' else 'guests'} "
                 f"at {location} on {date} at {matched}. "
                 f"Your reference number is {booking_reference}. "
-                "I'll prepare the payment link and WhatsApp confirmation now. "
+                "I've sent the payment link on WhatsApp. "
                 "The payment link stays active for 15 minutes. "
-                "Once payment is completed, you'll receive the confirmation on WhatsApp. "
+                "Once payment is completed, your booking will be confirmed. "
                 "Have a great time. "
                 "I can also help with food options, parking, or arrival guidance."
             ), booking_result
@@ -1040,6 +1314,233 @@ class BookingAgent:
             f"on {date} at {matched}. Your checkout reference is {booking_id}. "
             f"The booking will be confirmed after checkout is completed. {self._concierge_follow_up()}"
         ), booking_result
+
+    def _capture_price_breakdown(self, booking_result: dict[str, Any]) -> None:
+        """Persist Kreeda's authoritative total without blocking a successful booking."""
+        breakdown = price_breakdown_from_totals(booking_result.get("totals"))
+        if not breakdown:
+            booking_id = str(booking_result.get("booking_id") or "").strip()
+            venue_id = str(
+                booking_result.get("venue_id")
+                or self.memory.data.get("venueId")
+                or self.memory.data.get("venue_id")
+                or ""
+            ).strip()
+            if booking_id and venue_id:
+                try:
+                    payment_status = self.orchestrator.check_payment_status(venue_id, booking_id)
+                    if isinstance(payment_status, dict):
+                        booking_result["payment_status_result"] = payment_status
+                        breakdown = price_breakdown_from_totals(payment_status.get("totals"))
+                except Exception as exc:
+                    logger.warning(
+                        "KREEDA_PRICE_LOOKUP_FAILED_NON_BLOCKING booking_id=%s reason=%s:%s",
+                        booking_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+        if breakdown:
+            booking_result["price_breakdown"] = breakdown
+            self.memory.data["price_breakdown"] = breakdown
+
+    @staticmethod
+    def _is_payment_link_request(lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:didn'?t|not|never|haven'?t|have not)\s+(?:receive|get|got)\b.{0,40}\b(?:payment\s+)?link\b",
+                lowered,
+            )
+            or re.search(r"\b(?:resend|send|share)\b.{0,30}\b(?:payment\s+)?link\b", lowered)
+        )
+
+    def _handle_payment_link_request(self) -> tuple[str, dict | None]:
+        booking_id = str(self.memory.data.get("booking_id") or "").strip()
+        payment_link = str(
+            self.memory.data.get("paymentUrl")
+            or self.memory.data.get("payment_url")
+            or self.memory.data.get("payment_link")
+            or ""
+        ).strip()
+        whatsapp_payload = self.memory.data.get("whatsapp_payload")
+        if booking_id and payment_link:
+            delivery: dict[str, Any] | None = None
+            if isinstance(whatsapp_payload, dict):
+                try:
+                    delivery = WatiClient().send_booking_payment_link(whatsapp_payload).to_dict()
+                    whatsapp_payload["wati_resend"] = delivery
+                    self.memory.data["whatsapp_payload"] = whatsapp_payload
+                    self.memory.data["whatsapp_delivery"] = delivery
+                    self.memory.save()
+                except Exception as exc:
+                    logger.exception(
+                        "WATI_RESEND_FAILED_NON_BLOCKING booking_id=%s reason=%s:%s",
+                        booking_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    delivery = {
+                        "attempted": True,
+                        "sent": False,
+                        "provider": "WATI",
+                        "reason": f"client_exception:{type(exc).__name__}: {exc}",
+                    }
+            status_note = "I've resent it on WhatsApp. " if delivery and delivery.get("sent") else "I still have the payment link saved. "
+            return (
+                f"{status_note}Your booking ID is {booking_id}. "
+                f"Payment link: {payment_link}. The link is valid for 15 minutes from generation."
+            ), self._booking_result
+
+        if booking_id and not payment_link:
+            return (
+                f"I found booking ID {booking_id}, but I don't have a payment link saved in this conversation. "
+                "I'll keep the booking details intact so the team can regenerate or resend it."
+            ), self._booking_result
+
+        return (
+            "I don't see a completed booking yet, so no payment link was generated. "
+            f"{self._next_booking_detail_prompt()}"
+        ), None
+
+    @staticmethod
+    def _is_payment_status_request(lowered: str) -> bool:
+        return bool(
+            re.search(r"\bi\s+(?:have\s+)?paid\b", lowered)
+            or re.search(r"\bpayment\s+(?:is\s+)?(?:done|completed)\b", lowered)
+            or re.search(r"\bpaid\s+(?:already|now|successfully)\b", lowered)
+            or (
+            re.search(r"\b(?:paid|payment|checkout)\b", lowered)
+            and re.search(r"\b(?:done|completed|received|through|status|confirm|confirmed|went)\b", lowered)
+            )
+        )
+
+    def _handle_payment_status_request(self) -> tuple[str, dict | None]:
+        booking_id = str(self.memory.data.get("booking_id") or "").strip()
+        venue_id = str(self.memory.data.get("venueId") or self.memory.data.get("venue_id") or "").strip()
+        if not booking_id:
+            return (
+                "I don't see a completed reservation yet, so there is no payment status to verify. "
+                f"{self._next_booking_detail_prompt()}"
+            ), self._booking_result
+        if not venue_id:
+            return (
+                f"I have booking ID {booking_id}, but I don't have the venue ID needed to verify payment with Kreeda. "
+                "I'll keep the booking details intact for the team to check."
+            ), self._booking_result
+        try:
+            status_result = self.orchestrator.check_payment_status(venue_id, booking_id)
+        except Exception as exc:
+            logger.exception(
+                "KREEDA_PAYMENT_STATUS_CHECK_FAILED booking_id=%s reason=%s:%s",
+                booking_id,
+                type(exc).__name__,
+                exc,
+            )
+            return (
+                "I couldn't verify the payment status with Kreeda just now. "
+                "Your reservation details are still saved, and I won't ask you to pay again until we can verify it."
+            ), self._booking_result
+        return self._apply_payment_status_result(status_result), self._booking_result
+
+    def _apply_payment_status_result(self, status_result: dict[str, Any]) -> str:
+        booking_id = str(status_result.get("bookingId") or self.memory.data.get("booking_id") or "")
+        status = str(status_result.get("status") or "").upper()
+        is_paid = bool(status_result.get("isPaid")) or status == "CONFIRMED"
+        self.memory.data["last_payment_status"] = status_result
+        if is_paid:
+            self.memory.data["booking_status"] = "CONFIRMED"
+            self.memory.data["bookingStatus"] = "CONFIRMED"
+            self.memory.data["payment_status"] = "PAID"
+            self.memory.data["paymentStatus"] = "PAID"
+            self.memory.data["current_workflow"] = "BOOKING_CONFIRMED"
+            self.memory.data["booking_phase"] = "BOOKING_CONFIRMED"
+            self.memory.save()
+            return (
+                "Your payment has been received successfully. "
+                "Your booking is now confirmed. "
+                "We look forward to seeing you."
+            )
+
+        deadline = str(
+            status_result.get("paymentDeadline")
+            or self.memory.data.get("paymentDeadline")
+            or self.memory.data.get("payment_deadline")
+            or ""
+        )
+        if status in {"EXPIRED", "CANCELLED", "RELEASED"} or self._payment_deadline_passed(deadline):
+            self.memory.data["booking_status"] = "EXPIRED"
+            self.memory.data["bookingStatus"] = "EXPIRED"
+            self.memory.data["payment_status"] = "EXPIRED"
+            self.memory.data["paymentStatus"] = "EXPIRED"
+            self.memory.data["current_workflow"] = "booking"
+            self.memory.data["booking_phase"] = "PAYMENT_EXPIRED"
+            self._clear_selected_slot()
+            self._available_slots = []
+            self._last_availability = {}
+            self.memory.save()
+            return (
+                "The payment window has expired, so your reservation has been released automatically. "
+                "The slot may now be available for other customers. "
+                "I can check the latest availability and reserve another slot if you'd like."
+            )
+
+        self.memory.data["booking_status"] = "RESERVED"
+        self.memory.data["bookingStatus"] = "RESERVED"
+        self.memory.data["payment_status"] = "UNPAID"
+        self.memory.data["paymentStatus"] = "UNPAID"
+        self.memory.save()
+        link = str(self.memory.data.get("paymentUrl") or self.memory.data.get("payment_link") or "")
+        suffix = f" Payment link: {link}" if link else ""
+        return (
+            f"Booking ID {booking_id} is still reserved, and payment is not marked complete yet."
+            f"{suffix}"
+        )
+
+    @staticmethod
+    def _payment_deadline_passed(value: str) -> bool:
+        if not value:
+            return False
+        try:
+            deadline = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= deadline.astimezone(timezone.utc)
+        except ValueError:
+            return False
+
+    def _is_waiting_for_booking_detail(self) -> bool:
+        return self._state in {
+            self._STATE_WAITING_FOR_AGE,
+            self._STATE_WAITING_FOR_FIRST_NAME,
+            self._STATE_WAITING_FOR_LAST_NAME,
+            self._STATE_WAITING_FOR_PHONE,
+            self._STATE_READY_FOR_BOOKING,
+        }
+
+    def _continue_booking_detail_collection(self) -> tuple[str, dict | None]:
+        if self._booking_gate_ready():
+            return self._prepare_selected_booking(self._selected_slot or str(self.memory.data.get("selected_slot") or ""))
+        return self._next_booking_detail_prompt(prefix="Got it. "), None
+
+    def _booking_gate_ready(self) -> bool:
+        return not self._booking_gate_missing_fields()
+
+    def _next_booking_detail_prompt(self, prefix: str = "") -> str:
+        if not self.memory.data.get("selected_slot"):
+            self._state = self._STATE_WAITING_FOR_SLOT
+            slots_text = self._format_slots(self._available_slots)
+            return f"{prefix}Which available slot would you prefer{': ' + slots_text if slots_text else ''}?"
+        self._selected_slot = self._selected_slot or str(self.memory.data.get("selected_slot") or "")
+        if not self.memory.data.get("customer_name"):
+            self._state = self._STATE_WAITING_FOR_FIRST_NAME
+            return f"{prefix}May I have your name?"
+        if not self.memory.data.get("phone"):
+            self._state = self._STATE_WAITING_FOR_PHONE
+            return f"{prefix}What's the best phone number for the booking?"
+        if not self.memory.data.get("age_group"):
+            self._state = self._STATE_WAITING_FOR_AGE
+            return f"{prefix}Are the players adults, kids, or a mix?"
+        self._state = self._STATE_READY_FOR_BOOKING
+        return f"{prefix}I have everything I need to reserve the booking."
 
     def _is_package_inquiry(self) -> bool:
         if self.memory.data.get("intent") in {
@@ -1188,6 +1689,9 @@ class BookingAgent:
 
         location = str(self.memory.data.get("location", ""))
         participants = int(self.memory.data.get("participants") or self.memory.data.get("company_size") or 2)
+        if not self._has_time_preference():
+            self._state = self._STATE_WAITING_FOR_TIME_PREFERENCE
+            return self._time_preference_question(), None
 
         # === TOOL CALL FIRST ===
         availability = self.availability_tool.check(location, new_date, participants)
@@ -1205,13 +1709,7 @@ class BookingAgent:
                     f"Great, {location} has availability on {new_date}, but no verified {period} slots for "
                     f"{participants} players. Could you share another time window?"
                 ), None
-            slots_text = self._format_slots(self._available_slots)
-            period = self._period_label_prefix()
-            return (
-                f"Great. We have availability at {location} on {new_date}. "
-                f"The {period}slots are {slots_text}. "
-                f"Which time works best for you?"
-            ), None
+            return self._availability_slots_response(new_date, location, participants), None
         else:
             # Still unavailable — ask again, but don't loop more than once
             self._state = self._STATE_CLOSED
@@ -1294,6 +1792,12 @@ class BookingAgent:
             return f"{cancellation} Rescheduling: {reschedule}".strip()
         return cancellation or reschedule
 
+    def _reschedule_policy_explanation(self) -> str:
+        policy = get_venue_policy(str(self.memory.data.get("location") or ""))
+        reschedule = str(policy.get("reschedulePolicy") or "").strip()
+        cancellation = str(policy.get("cancellationPolicy") or "").strip()
+        return reschedule or cancellation
+
     def _contextual_best_response(self) -> str:
         topic = self.memory.data.get("last_discussed_topic", "")
         if topic == "food":
@@ -1340,9 +1844,15 @@ class BookingAgent:
             return f"{answer} Which location would you prefer?"
         if not self.memory.data.get("preferred_date"):
             return f"{answer} What date would you like to visit?"
+        if self._state == self._STATE_WAITING_FOR_SLOT_CONFIRMATION:
+            pending = str(self.memory.data.get("pending_slot_confirmation") or "").strip()
+            if pending:
+                return f"{answer} Just to confirm, would you like the {pending} slot?"
         if self._state == self._STATE_WAITING_FOR_SLOT:
             slots_text = self._format_slots(self._available_slots)
-            return f"{answer} Your available slots are {slots_text}. Which time works best?"
+            return f"{answer} The available slots are {slots_text}. Which time would you prefer?"
+        if self._state == self._STATE_WAITING_FOR_TIME_PREFERENCE:
+            return f"{answer} What time works best for you: morning, afternoon, or evening?"
         if self._state == self._STATE_WAITING_FOR_ALT_DATE:
             return f"{answer} What alternative date would work for you?"
         if self._state == self._STATE_WAITING_FOR_AGE:
@@ -1397,6 +1907,111 @@ class BookingAgent:
         slots = self._sorted_slots(slots)
         return slots[:4] if period else slots
 
+    def _capture_time_preference(self, message: str) -> None:
+        lowered = message.lower()
+        if self._is_any_time_preference(lowered):
+            self.memory.data["time_preference"] = "any"
+            self.memory.data["preferred_time"] = ""
+            self.memory.data["requested_time"] = ""
+            self.memory.data["preferred_period"] = ""
+            self.memory.save()
+            return
+        period = self.memory._extract_preferred_period(lowered)
+        if period:
+            self.memory.set_field("preferred_period", period, message, expected_field="preferred_period")
+            self.memory.data["time_preference"] = "period"
+            self.memory.data["requested_time"] = period
+            self.memory.save()
+
+    @staticmethod
+    def _is_any_time_preference(lowered: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(?:any\s+time|anytime|no\s+preference|no\s+specific\s+time|"
+                r"whatever\s+is\s+available|anything\s+works|any\s+slot|any\s+available)\b",
+                lowered,
+            )
+        )
+
+    def _has_time_preference(self) -> bool:
+        return bool(
+            self.memory.data.get("selected_slot")
+            or self.memory.data.get("preferred_time")
+            or self.memory.data.get("preferred_period")
+            or self.memory.data.get("time_preference") == "any"
+        )
+
+    @staticmethod
+    def _time_preference_question() -> str:
+        return "What time works best for you: morning, afternoon, or evening?"
+
+    @staticmethod
+    def _format_slot_lines(slots: list[str]) -> str:
+        return "\n".join(f"• {slot}" for slot in slots)
+
+    def _availability_slots_response(self, date: str, location: str, participants: int) -> str:
+        name = str(self.memory.data.get("customer_name", ""))
+        greeting = f"Thank you{', ' + name if name else ''}. " if name else ""
+        preferred_time = str(self.memory.data.get("preferred_time") or "").strip()
+        if preferred_time:
+            matched = self._match_slot(preferred_time, self._available_slots)
+            if matched:
+                suggested = [matched]
+                self.memory.data["last_suggested_slots"] = suggested
+                self.memory.save()
+                return (
+                    f"{greeting}I've checked availability for {date} at {location} for {participants} players. "
+                    f"{matched} is available. Would you like that slot?"
+                )
+            nearest = self._nearby_slots_for_preferred_time(preferred_time, self._available_slots, limit=3)
+            self.memory.data["last_suggested_slots"] = nearest
+            self.memory.save()
+            slots_text = self._format_slot_lines(nearest or self._available_slots)
+            return (
+                f"{greeting}I've checked availability for {date} at {location} for {participants} players. "
+                f"I couldn't find exactly {preferred_time}.\n\n"
+                f"The closest available slots are:\n\n{slots_text}\n\n"
+                "Which time would you prefer?"
+            )
+
+        period = str(self.memory.data.get("preferred_period") or "").strip()
+        if period:
+            slots_text = self._format_slot_lines(self._available_slots)
+            return (
+                f"{greeting}I've checked availability for {date} at {location} for {participants} players. "
+                f"The available {period} slots are:\n\n{slots_text}\n\n"
+                "Which time would you prefer?"
+            )
+
+        slots_text = self._format_slot_lines(self._available_slots)
+        return (
+            f"{greeting}I've checked availability for {date} at {location} for {participants} players. "
+            f"The available slots are:\n\n{slots_text}\n\n"
+            "Which time would you prefer?"
+        )
+
+    @classmethod
+    def _slot_outside_operating_window(cls, slot: str) -> bool:
+        minutes = cls._slot_total_minutes(slot)
+        if minutes < 0:
+            return False
+        return minutes < 9 * 60 or minutes > 23 * 60
+
+    def _outside_hours_response(self, slot: str) -> str:
+        location = str(self.memory.data.get("location") or "").strip()
+        room = str(self.memory.data.get("room") or "").strip()
+        date = str(self.memory.data.get("preferred_date") or "that date").strip()
+        context = ""
+        if room and location:
+            context = f" for {room} at {location} on {date}"
+        elif location:
+            context = f" at {location} on {date}"
+        return (
+            f"{slot} is outside Breakout's bookable slot window{context}, so it won't be available. "
+            "The nearest real options are later in the day; I can check late-morning, afternoon, or evening slots."
+            + ("" if location else " Share the location if you want me to check the nearest real alternatives.")
+        )
+
     @classmethod
     def evening_slots(cls, slots: list[str]) -> list[str]:
         """Return verified slots in the inclusive 17:00-22:00 window."""
@@ -1415,6 +2030,30 @@ class BookingAgent:
             "",
         )
         return preferred or (evening[0] if evening else "")
+
+    @classmethod
+    def _nearby_slots_for_preferred_time(cls, chosen: str, available: list[str], limit: int = 3) -> list[str]:
+        target = cls._slot_total_minutes(chosen)
+        if target < 0:
+            return cls._nearest_slots(chosen, available, limit=limit)
+        parsed = [
+            (cls._slot_total_minutes(slot), slot)
+            for slot in cls._sorted_slots(available)
+            if cls._slot_total_minutes(slot) >= 0
+        ]
+        before = [slot for minutes, slot in parsed if minutes <= target]
+        after = [slot for minutes, slot in parsed if minutes > target]
+        selected: list[str] = []
+        if before:
+            selected.append(before[-1])
+        selected.extend(after[: max(limit - len(selected), 0)])
+        if len(selected) < limit:
+            for slot in reversed(before[:-1]):
+                if slot not in selected:
+                    selected.append(slot)
+                if len(selected) >= limit:
+                    break
+        return selected[:limit]
 
     def _period_label_prefix(self) -> str:
         period = str(self.memory.data.get("preferred_period") or "").strip()
@@ -1514,7 +2153,10 @@ class BookingAgent:
 
     def _clear_selected_slot(self) -> None:
         self._selected_slot = ""
+        self._available_slots = []
+        self._last_availability = {}
         self.memory.data["selected_slot"] = ""
+        self.memory.data["last_suggested_slots"] = []
         for field in (
             "_kreeda_cart_id", "_kreeda_cart_signature", "_booking_idempotency_key",
         ):
@@ -1532,11 +2174,118 @@ class BookingAgent:
                 "arrival", "directions", "direction", "dress code", "what should i wear",
                 "age restriction", "age restrictions", "minimum age", "kids allowed",
                 "children allowed", "cancellation", "cancel policy", "refund policy",
+                "locked", "lock in", "lock inside", "hints", "hint system", "clue",
+                "wheelchair", "accessible", "accessibility", "group photo", "photo",
+                "restroom", "washroom", "bathroom", "toilet", "loo", "birthday", "bday", "cake",
             )
         )
 
+    def _booking_interruption_answer(self, message: str) -> str:
+        if self._is_booking_faq(message):
+            return self._booking_faq_answer(message)
+        if self._is_direct_question(message):
+            return "I'm not sure about that — our branch team would be the best people to confirm."
+        return ""
+
+    @staticmethod
+    def _is_direct_question(message: str) -> bool:
+        lowered = message.lower().strip()
+        return bool(
+            "?" in message
+            or re.match(
+                r"^(?:can|could|do|does|did|is|are|will|would|what|when|where|why|how|if)\b",
+                lowered,
+            )
+        )
+
+    @staticmethod
+    def _is_generic_slot_confirmation(lowered: str) -> bool:
+        cleaned = lowered.strip(" .!?")
+        generic = {
+            "yes", "yeah", "yep", "yup", "sure", "ok", "okay",
+            "that works", "works", "works for me", "sounds good",
+            "fine", "perfect", "great", "let's do it", "lets do it",
+            "go ahead", "confirm", "please confirm",
+        }
+        return cleaned in generic or bool(
+            re.fullmatch(
+                r"(?:yes|yeah|yep|sure|ok|okay|sounds good|that works)[,. ]*(?:let'?s do it|go ahead|confirm it)?",
+                cleaned,
+            )
+        )
+
+    @classmethod
+    def _is_affirmative_slot_confirmation(cls, lowered: str) -> bool:
+        return cls._is_generic_slot_confirmation(lowered)
+
+    @staticmethod
+    def _is_negative_slot_confirmation(lowered: str) -> bool:
+        cleaned = lowered.strip(" .!?")
+        return cleaned in {"no", "nope", "nah", "not that one", "different one"} or cleaned.startswith("no ")
+
+    @staticmethod
+    def _discount_answer() -> str:
+        return (
+            "Yes. The knowledge base lists 10% off for 4 or more players, "
+            "10% off for 6 or more players, and a 10% student discount with valid ID."
+        )
+
+    def _price_answer(self) -> str:
+        if not self.memory.data.get("price_breakdown"):
+            try:
+                self.memory._refresh_estimated_price()
+            except Exception:
+                pass
+        breakdown = dict(self.memory.data.get("price_breakdown") or {})
+        final_price = breakdown.get("final_price")
+        base_price = breakdown.get("base_price")
+        discount = breakdown.get("discount")
+        if final_price:
+            if discount:
+                return f"The estimated total price for the current details is INR {final_price} after a 10% discount. The base price is INR {base_price} and the discount is INR {discount}."
+            return f"The estimated total price for the current details is INR {final_price}."
+        return "Pricing depends on location, room, date, and group size. Once those are set, I can confirm the final amount through the booking flow."
+
+    @classmethod
+    def _unknown_room_selection_name(cls, message: str) -> str:
+        lowered = message.lower()
+        if any(room in lowered for room in cls._ESCAPE_ROOM_NAMES):
+            return ""
+        if "?" in message or any(
+            term in lowered
+            for term in (
+                "closest", "nearest", "discount", "offer", "coupon", "promo",
+                "recommend", "suggest", "available", "availability", "slot",
+                "that works", "works for me", "sounds good", "do you have",
+            )
+        ):
+            return ""
+        if "locked inside" in lowered and re.search(r"\b(?:let'?s|lets|book|choose|pick|go with|do)\b", lowered):
+            return "Locked Inside"
+        return ""
+
+    def _unknown_room_selection_response(self, room_name: str) -> str:
+        options = self._format_slots(
+            ["Murder Mystery", "Hostage", "Classified", "Undercover", "Bomb Defusal", "Missile Attack"]
+        )
+        return f"I don't see a room called {room_name} in the current room list. The bookable room names include {options}. Which room did you mean?"
+
     def _booking_faq_answer(self, message: str) -> str:
         lowered = message.lower()
+        if "wheelchair" in lowered or "accessible" in lowered or "accessibility" in lowered:
+            return "I don't have verified accessibility details for every room here, so the branch team should confirm the exact room access before you arrive."
+        if "group photo" in lowered or "photo" in lowered:
+            return "You can ask the branch team for a quick group photo after the game; it depends on on-site timing, but it is usually a simple request."
+        if any(term in lowered for term in ("restroom", "washroom", "bathroom", "toilet", "loo")):
+            return "If someone needs the restroom mid-game, staff can help them step out safely. It may use some game time, but safety and comfort come first."
+        if "birthday" in lowered or "bday" in lowered:
+            return "Yes, an escape room can work well for a birthday group, especially if everyone is comfortable with puzzles and teamwork. Add-ons like cake or food should be confirmed with the branch team."
+        if "cake" in lowered:
+            return "Cake or celebration add-ons should be confirmed with the branch team, especially if you need storage, setup, or a table after the game."
+        if "locked" in lowered or "lock inside" in lowered or "lock in" in lowered:
+            return "You are not actually locked in. The staff monitors the game and can open the room if needed."
+        if "hint" in lowered or "clue" in lowered:
+            return "The game master can provide hints when your team needs help, so first-time players do not get stuck for long."
         if "parking" in lowered or re.search(r"\bpark\b", lowered):
             return self._parking_faq_answer(message)
         if "cancellation" in lowered or "cancel policy" in lowered or "refund policy" in lowered:
@@ -1682,14 +2431,52 @@ class BookingAgent:
             lowered,
         ) and not re.search(r"\b(?:around|about|at|then|works|slot|pm|tonight)\b", lowered):
             return ""
-        bare = re.search(r"\b(?:around|about|at|for|by)?\s*(\d{1,2})(?::(\d{2}))?\b", lowered)
-        if bare and re.search(r"\b(?:around|about|at|then|works|slot|pm|evening|tonight|closest|nearest)\b", lowered):
-            hour = int(bare.group(1))
+        bare = re.search(r"\b(?:(around|about|at|by|closest|nearest)\s+)?(\d{1,2})(?::(\d{2}))?\b", lowered)
+        if bare:
+            hour_text = bare.group(2)
+            direct_anchor = bool(bare.group(1))
+            short_numeric_reply = bool(re.fullmatch(r"\s*\d{1,2}(?::\d{2})?\s*", lowered))
+            adjacent_period = bool(
+                re.search(rf"\b{re.escape(hour_text)}(?::\d{{2}})?\s+(?:evening|tonight)\b", lowered)
+            )
+            conversational_slot_anchor = bool(
+                re.search(r"\b(?:then|works|slot|closest|nearest)\b", lowered)
+            )
+        if bare and (direct_anchor or short_numeric_reply or adjacent_period or conversational_slot_anchor):
+            after = lowered[bare.end(): bare.end() + 24]
+            before = lowered[max(0, bare.start() - 12): bare.start()]
+            if (
+                re.match(r"\s*(?:people|persons|guests|kids|children|adults|participants|players|members|friends|employees|colleagues|of us)\b", after)
+                or re.search(r"\b(?:for|group of)\s*$", before)
+            ):
+                return ""
+            hour = int(hour_text)
             if 1 <= hour <= 11:
-                minute = bare.group(2) or "00"
-                period = "PM" if 5 <= hour <= 11 else "AM"
+                minute = bare.group(3) or "00"
+                has_minutes = bool(bare.group(3))
+                if has_minutes and hour <= 8:
+                    period = "PM"
+                elif hour >= 5:
+                    period = "PM"
+                else:
+                    return ""
                 return f"{hour}:{minute} {period}"
 
+        return ""
+
+    @staticmethod
+    def _ambiguous_bare_time_reference(message: str) -> str:
+        lowered = message.lower().strip()
+        if re.search(r"\b(?:am|pm|morning|afternoon|evening|tonight)\b", lowered):
+            return ""
+        _WORDS = {"one": "1", "two": "2", "three": "3", "four": "4"}
+        for word, digit in _WORDS.items():
+            lowered = re.sub(rf"\b{word}\b", digit, lowered)
+        match = re.search(r"\b(?:around|about|at|by)\s+([1-4])\b(?!\s*:)", lowered)
+        if match:
+            return match.group(1)
+        if re.fullmatch(r"\s*([1-4])\s*", lowered):
+            return lowered.strip()
         return ""
 
     @staticmethod

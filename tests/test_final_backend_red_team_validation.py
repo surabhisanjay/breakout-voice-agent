@@ -184,6 +184,7 @@ def test_200_voice_style_asr_conversations_use_aliases_and_do_not_crash(tmp_path
                 "recommended_option": "Murder Mystery",
                 "participants": 4,
                 "preferred_date": "18 June",
+                "time_preference": "any",
                 "phone": "9876543210",
             }
         )

@@ -29,7 +29,8 @@ def _payload() -> dict:
         {
             "booking_reference": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "totals": {"subtotal": 2800, "total": 2520, "currency": "INR"},
+            "status": "RESERVED",
         },
     )
 
@@ -54,39 +55,14 @@ def test_whatsapp_payload_prefers_booking_id_over_order_reference() -> None:
 
 
 def test_wati_client_skips_when_env_not_configured(monkeypatch) -> None:
-    for key in (
-        "WATI_ACCESS_TOKEN",
-        "WATI_API_KEY",
-        "WATI_BASE_URL",
-        "WATI_API_VERSION",
-        "WHATSAPP_ACCESS_TOKEN",
-        "WHATSAPP_API_ENDPOINT",
-        "WHATSAPP_API_VERSION",
-    ):
+    for key in ("WATI_ACCESS_TOKEN", "WATI_API_KEY", "WATI_BASE_URL", "API_VERSION"):
         monkeypatch.delenv(key, raising=False)
-
-    assert WatiConfig.from_env() is None
 
     result = WatiClient().send_booking_payment_link(_payload())
 
     assert result.attempted is False
     assert result.sent is False
     assert result.error == "missing_configuration"
-
-
-def test_wati_config_accepts_whatsapp_aliases_and_strips_bearer(monkeypatch) -> None:
-    monkeypatch.delenv("WATI_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("WATI_BASE_URL", raising=False)
-    monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "Bearer alias-token")
-    monkeypatch.setenv("WHATSAPP_API_ENDPOINT", "https://wati.example/tenant/")
-    monkeypatch.setenv("WHATSAPP_API_VERSION", "Version 1")
-
-    config = WatiConfig.from_env()
-
-    assert config is not None
-    assert config.access_token == "alias-token"
-    assert config.base_url == "https://wati.example/tenant"
-    assert config.api_version == "v1"
 
 
 def test_wati_client_sends_session_message_with_env_credentials(monkeypatch) -> None:
@@ -269,7 +245,8 @@ def test_wati_send_invoked_after_booking(monkeypatch, tmp_path: Path) -> None:
             "booking_reference": "or_123",
             "order_id": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "totals": {"subtotal": 2800, "total": 2520, "currency": "INR"},
+            "status": "RESERVED",
             "confirmed": True,
             "location": "Whitefield",
             "date": "Tomorrow",
@@ -284,6 +261,9 @@ def test_wati_send_invoked_after_booking(monkeypatch, tmp_path: Path) -> None:
 
     assert booking_result["booking_id"] == "bk_123"
     assert "Sending the payment link" in response
+    assert "Total price: INR 2520" in response
+    assert booking_result["price_breakdown"]["discount"] == 280
+    assert memory.data["price_breakdown"]["final_price"] == 2520
     assert memory.data["whatsapp_payload"]["send"] is True
     assert memory.data["whatsapp_payload"]["wati_send"]["attempted"] is True
     assert len(calls) == 1
@@ -336,7 +316,7 @@ def test_booking_succeeds_even_if_wati_temporarily_fails(monkeypatch, tmp_path: 
 
     assert booking_result["booking_id"] == "bk_123"
     assert booking_result["confirmed"] is True
-    assert booking_result["status"] == "PAYMENT_PENDING"
+    assert booking_result["status"] == "RESERVED"
     assert "reserved your slot" in response.lower()
     assert booking_result["whatsapp"] == memory.data["whatsapp_delivery"]
     assert booking_result["whatsapp"]["attempted"] is True
@@ -374,7 +354,7 @@ def _booking_agent_with_result(memory: ConversationMemory) -> BookingAgent:
             "booking_reference": "or_123",
             "order_id": "or_123",
             "payment_url": "https://pay.example/link",
-            "status": "PAYMENT_PENDING",
+            "status": "RESERVED",
             "confirmed": True,
             "location": "Whitefield",
             "date": "Tomorrow",

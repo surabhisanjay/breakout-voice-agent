@@ -106,6 +106,15 @@ class WhatsAppMessageRequest(BaseModel):
     contact_name: str = Field(default="", max_length=160)
 
 
+class WhatsAppWebhookResponse(BaseModel):
+    success: bool
+    ignored: bool = False
+    session_id: str = ""
+    response: str = ""
+    next_agent: str = "inbound_agent"
+    wati: dict[str, Any] = Field(default_factory=dict)
+
+
 def _openai_message_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -450,6 +459,8 @@ def _persist_vapi_event(payload: Any, request: Request) -> dict[str, Any]:
         runtime = _sessions.get(call_id)
         if runtime is not None:
             runtime.inbound.memory.data.update(memory.data)
+        if status == "ended":
+            _trigger_whatsapp_followup(memory)
 
         # Database and real-time updates for Vapi active calls pipeline
         try:
@@ -1122,6 +1133,11 @@ def vapi_live_calls() -> dict[str, Any]:
             "listen_websocket_available": bool(data.get("vapi_monitor_listen_url")),
             "control_url_available": bool(data.get("vapi_monitor_control_url")),
             "event_count": data.get("vapi_event_count", 0),
+            "sentiment": {
+                "sentiment": data.get("sentiment", "neutral"),
+                "confidence": data.get("sentiment_confidence", 0.0),
+                "reason": data.get("sentiment_reason", ""),
+            }
         })
     return {"count": len(calls), "calls": calls}
 
@@ -1273,7 +1289,7 @@ def whatsapp_message(
 
 
 @app.post("/wati/webhook")
-async def wati_webhook(request: Request) -> dict[str, Any]:
+async def wati_webhook_old(request: Request) -> dict[str, Any]:
     from src.channels.whatsapp import parse_wati_webhook
 
     _verify_wati_webhook(request)
@@ -1294,6 +1310,135 @@ async def wati_webhook(request: Request) -> dict[str, Any]:
         result.delivery.sent,
     )
     return {"received": True, **result.to_dict()}
+
+
+def _first_text(value: Any, keys: set[str]) -> str:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in keys and item not in (None, ""):
+                if isinstance(item, dict) and "body" in item:
+                    return str(item["body"]).strip()
+                if not isinstance(item, (dict, list)):
+                    return str(item).strip()
+            nested = _first_text(item, keys)
+            if nested:
+                return nested
+    if isinstance(value, list):
+        for item in value:
+            nested = _first_text(item, keys)
+            if nested:
+                return nested
+    return ""
+
+
+def _extract_wati_message(payload: dict[str, Any]) -> tuple[str, str, bool]:
+    event_type = str(
+        payload.get("eventType")
+        or payload.get("event")
+        or payload.get("type")
+        or ""
+    ).lower()
+    if event_type in {"message_status", "sentmessage", "templatemessage", "status"}:
+        return "", "", True
+    if payload.get("fromMe") is True or payload.get("isFromMe") is True:
+        return "", "", True
+
+    phone = _first_text(
+        payload,
+        {
+            "waid", "whatsappnumber", "whatsapp_number", "sender", "from",
+            "phone", "mobilenumber", "mobile", "contactnumber",
+        },
+    )
+    message = ""
+    for key in ("text", "body", "message", "messageText", "textMessage"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            message = str(value.get("body") or value.get("text") or "").strip()
+        elif value not in (None, ""):
+            message = str(value).strip()
+        if message:
+            break
+    if not message:
+        message = _first_text(payload, {"body", "messagetext", "textmessage"})
+    return phone, message, False
+
+
+def _whatsapp_session_id(phone: str) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if len(digits) == 10:
+        digits = f"91{digits}"
+    if not digits:
+        raise HTTPException(status_code=400, detail="WhatsApp sender phone is required.")
+    return _validate_session_id(f"whatsapp:{digits}")
+
+
+@app.post("/webhooks/wati", response_model=WhatsAppWebhookResponse)
+@app.post("/api/v1/whatsapp/wati/webhook", response_model=WhatsAppWebhookResponse)
+async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="WATI webhook payload must be a JSON object.")
+    logger.info("WATI_INBOUND_WEBHOOK=%s", _json_log_value(payload))
+
+    phone, message, ignored = _extract_wati_message(payload)
+    if ignored:
+        return WhatsAppWebhookResponse(success=True, ignored=True)
+    message = message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="WhatsApp message text is required.")
+
+    session_id = _whatsapp_session_id(phone)
+    runtime = _get_runtime(session_id)
+    with _lock:
+        runtime.inbound.memory.data["channel"] = "whatsapp"
+        runtime.inbound.memory.data["whatsapp_number"] = "".join(ch for ch in str(phone) if ch.isdigit())
+        runtime.inbound.memory.save()
+        result, booking, active_agent = dispatch(
+            message,
+            runtime.inbound,
+            runtime.booking,
+            runtime.active_agent,
+        )
+        runtime.booking = booking
+        runtime.active_agent = active_agent
+        runtime.inbound.memory.data["channel"] = "whatsapp"
+        runtime.inbound.memory.data["last_whatsapp_inbound"] = {
+            "phone": runtime.inbound.memory.data.get("whatsapp_number", ""),
+            "message": message,
+            "received_at": _now_iso(),
+        }
+        runtime.inbound.memory.save()
+
+    from src.services.wati_client import WatiClient
+    wati_result = WatiClient().send_session_message(
+        phone,
+        result.response,
+        context={
+            "session_id": session_id,
+            "next_agent": result.next_agent,
+            "channel": "whatsapp",
+        },
+    )
+    wati_delivery = wati_result.to_dict()
+    with _lock:
+        runtime.inbound.memory.data["last_whatsapp_reply"] = {
+            "message": result.response,
+            "delivery": wati_delivery,
+            "sent_at": _now_iso(),
+        }
+        runtime.inbound.memory.save()
+
+    response = WhatsAppWebhookResponse(
+        success=True,
+        session_id=session_id,
+        response=result.response,
+        next_agent=result.next_agent,
+        wati=wati_delivery,
+    )
+    logger.info("WATI_WEBHOOK_RESPONSE=%s", _json_log_value(response.model_dump()))
+    return response
 
 
 @app.post("/reset", response_model=ResetResponse)
@@ -2236,6 +2381,76 @@ def export_calls(user: ApiUser = Depends(_current_user)) -> Response:
 @api_v1.get("/export/contacts")
 def export_contacts(user: ApiUser = Depends(_current_user)) -> Response:
     return _csv_response(_scoped(closira_store.org(user.org_id)["contacts"], user), "contacts.csv")
+
+
+def format_whatsapp_followup(memory_data: dict[str, Any]) -> str:
+    name = memory_data.get("customer_name") or "there"
+    is_escalated = bool(memory_data.get("escalation_state", {}).get("escalate"))
+    
+    if is_escalated:
+        msg = f"Hi {name},\n\nThanks for calling Breakout! We'll connect you with someone shortly.\n\nHere is a summary of your inquiry:\n"
+    else:
+        msg = f"Hi {name},\n\nThanks for calling Breakout! 🌟\n\nHere is a summary of your inquiry:\n"
+    
+    room = memory_data.get("room") or memory_data.get("recommended_option")
+    if room:
+         msg += f"- *Theme/Room*: {room}\n"
+    
+    loc = memory_data.get("location")
+    if loc:
+         msg += f"- *Location*: {loc}\n"
+         
+    players = memory_data.get("participants") or memory_data.get("company_size")
+    if players:
+         msg += f"- *Players*: {players}\n"
+         
+    date = memory_data.get("preferred_date")
+    if date:
+         msg += f"- *Preferred Date*: {date}\n"
+    time_pref = memory_data.get("preferred_time") or memory_data.get("preferred_period")
+    if time_pref:
+         msg += f"- *Time*: {time_pref}\n"
+         
+    booking_id = memory_data.get("booking_id")
+    if booking_id:
+         payment_link = memory_data.get("payment_link")
+         if payment_link:
+             msg += f"- *Payment Link*: {payment_link}\n"
+         
+    msg += "\nWe look forward to hosting your escape room adventure! If you have any questions, feel free to reply to this chat.\n\nWarm regards,\nBreakout Escape Rooms Team"
+    return msg
+
+
+def _trigger_whatsapp_followup(memory: Any) -> None:
+    memory_data = memory.data
+    if memory_data.get("whatsapp_followup_sent"):
+        logger.info("WhatsApp follow-up already sent for this session.")
+        return
+        
+    if memory_data.get("whatsapp_followup_consent") is True:
+        whatsapp_phone = memory_data.get("whatsapp_followup_phone") or memory_data.get("phone")
+        if not whatsapp_phone or whatsapp_phone == "current_number":
+            whatsapp_phone = "8217008407"
+            logger.warning("WhatsApp follow-up consent granted but no phone number found.")
+            return
+            
+        from src.services.wati_client import WatiClient
+        client = WatiClient.from_env()
+        if not client or not client.configured():
+            logger.warning("WhatsApp follow-up skipped: Wati client is not configured in environment.")
+            return
+            
+        content = format_whatsapp_followup(memory_data)
+        try:
+            delivery = client.send_session_message(whatsapp_phone, content)
+            if delivery.sent:
+                logger.info("WhatsApp follow-up successfully sent to %s", whatsapp_phone)
+                memory_data["whatsapp_followup_sent"] = True
+                memory.save()
+            else:
+                logger.warning("WhatsApp follow-up failed for %s. Reason: %s, Response: %s", whatsapp_phone, delivery.reason, delivery.response)
+        except Exception as e:
+            logger.error("Failed to send WhatsApp follow-up message to %s: %s", whatsapp_phone, e)
 
 
 app.include_router(api_v1)

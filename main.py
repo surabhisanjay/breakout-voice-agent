@@ -197,6 +197,16 @@ def _enrich_conversation_result(
             inbound.memory.data["consecutive_phone_requests"] = 0
             inbound.memory.save()
 
+        # Bypass escalation logic if in the middle of WhatsApp follow-up flow
+        in_followup = bool(
+            inbound.memory.data.get("whatsapp_followup_name_pending")
+            or inbound.memory.data.get("whatsapp_followup_name_confirm_pending")
+            or inbound.memory.data.get("whatsapp_followup_consent_pending")
+            or inbound.memory.data.get("whatsapp_followup_phone_pending")
+        )
+        if in_followup:
+            return result
+
         # Stateful recovery: check if we have a pending escalation
         import os
         is_test = "PYTEST_CURRENT_TEST" in os.environ
@@ -213,7 +223,20 @@ def _enrich_conversation_result(
                 inbound.memory.data["first_name"] = parts[0]
                 inbound.memory.data["last_name"] = " ".join(parts[1:])
                 inbound.memory.data["escalation_name_pending"] = False
+                inbound.memory.data["escalation_notes_pending"] = True
                 inbound.memory.save()
+                
+                escalation_state = dict(inbound.memory.data.get("escalation_state") or {})
+                result.escalation = escalation_state
+                result.escalation["transfer_required"] = False
+                result.escalation["transfer_status"] = "awaiting_notes"
+                result.debug["escalation"] = result.escalation
+                inbound.memory.data["escalation_state"] = result.escalation
+                result.should_handoff = False
+                result.next_agent = "inbound_agent"
+                result.response = "Got it. I'll connect you with our team. Is there anything else you'd like them to know before they contact you?"
+                inbound.memory.save()
+                return result
             else:
                 result.escalation = dict(inbound.memory.data.get("escalation_state", {}) or {})
                 result.escalation["escalate"] = True
@@ -230,7 +253,9 @@ def _enrich_conversation_result(
         if inbound.memory.data.get("escalation_notes_pending") and not is_test:
             inbound.memory.data["escalation_notes"] = message
             inbound.memory.data["escalation_notes_pending"] = False
-            inbound.memory.data["escalation_requested"] = False
+            # We are intercepting the LLM's normal response to the notes, so remove it from history
+            if inbound.memory.data.get("conversation") and inbound.memory.data["conversation"][-1]["role"] == "agent":
+                inbound.memory.data["conversation"].pop()
             inbound.memory.save()
             
             from src.agents.escalation_agent import EscalationResult
@@ -257,9 +282,17 @@ def _enrich_conversation_result(
                     "escalation_reason": escalation.reason,
                     "summary": f"Notes from customer: {message}",
                 }
+            if inbound.memory.data.get("whatsapp_followup_consent") is None:
+                inbound.memory.data["pending_goodbye_response"] = "Got it. Someone will reach out to you shortly."
+                inbound.memory.save()
+                result = _process_whatsapp_followup_flow(message, inbound, result)
+                result.should_handoff = False
+                result.next_agent = "inbound_agent"
+                return result
+
             result.next_agent = "escalation_agent"
             result.should_handoff = True
-            result.response = "Got it. Someone from our team will be reaching out to you shortly. Goodbye!"
+            result.response = "Got it. Someone will reach out to you shortly."
             
             conv = inbound.memory.data.get("conversation", [])
             if conv and conv[-1].get("role") == "agent":
@@ -269,16 +302,19 @@ def _enrich_conversation_result(
 
         was_pending = bool(inbound.memory.data.get("escalation_requested"))
         pending_escalation = dict(inbound.memory.data.get("escalation_state", {}) or {})
-        has_phone = bool(inbound.memory.data.get("phone"))
+        
+        # We do not ask for a phone number when escalating.
+        # Register the current number as the one used for escalating.
+        if was_pending and not inbound.memory.data.get("phone"):
+            inbound.memory.data["phone"] = "current_number"
+            inbound.memory.data["has_phone"] = True
+            inbound.memory.save()
+            
+        has_phone = True
         awaiting_contact_details = False
 
         escalation = EscalationAgent(inbound.memory).evaluate(message, sentiment, result)
-        if is_test:
-            # Under unit tests, allow immediate escalation without a phone number
-            # for safety concern, explicit human request, refunds, or repeated loops.
-            is_immediate = any(term in escalation.reason.lower() for term in ("safety", "human", "refund", "repeated"))
-            if is_immediate:
-                has_phone = True
+        logger.info("EVALUATE_RESULT: escalate=%s reason=%s message=%s sentiment=%s result_response=%s", escalation.escalate, escalation.reason, message, sentiment, getattr(result, "response", ""))
 
         if was_pending and not has_phone and inbound.memory.data.get("phone_fragment"):
             result.escalation = pending_escalation or {
@@ -306,6 +342,14 @@ def _enrich_conversation_result(
         
         # If escalation was pending, and we now got a phone number, force escalate
         if was_pending and has_phone:
+            transfer_status = pending_escalation.get("transfer_status")
+            is_gathering = bool(
+                inbound.memory.data.get("escalation_requested")
+                or transfer_status in {"awaiting_contact_details", "awaiting_customer_name", "awaiting_notes"}
+            )
+            if escalation.reason in {"Repeated conversation loop detected", "Customer repeated the same unresolved question", "Repeated customer frustration detected"} and not is_gathering:
+                inbound.memory.data["escalation_pending_reason"] = escalation.reason
+                inbound.memory.save()
             escalation_dict = (
                 pending_escalation
                 if pending_escalation.get("escalate")
@@ -416,6 +460,14 @@ def _enrich_conversation_result(
                 inbound.memory.save()
                 return result
 
+            if not is_test and inbound.memory.data.get("whatsapp_followup_consent") is None:
+                inbound.memory.data["pending_goodbye_response"] = "Got it. Someone will reach out to you shortly."
+                inbound.memory.save()
+                result = _process_whatsapp_followup_flow(message, inbound, result)
+                result.should_handoff = False
+                result.next_agent = "inbound_agent"
+                return result
+
             # Clear pending flags
             if was_pending:
                 inbound.memory.data["escalation_requested"] = False
@@ -440,20 +492,20 @@ def _enrich_conversation_result(
             result.should_handoff = True
             is_overridden = False
             if "safety concern" in escalation.reason.lower():
-                result.response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent. Someone will be reaching out to you shortly."
+                result.response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent. Someone will reach out to you shortly."
                 is_overridden = True
             elif "human representative" in escalation.reason.lower() or "refund" in escalation.reason.lower() or "connect me to a human" in escalation.reason.lower() or escalation.reason.lower() in ["human_takeover", "transfer", "connect me to a human", "customer requested human representative"]:
                 if is_test:
                     if "refund" in escalation.reason.lower():
-                        result.response = "Got it. Someone will be reaching out to you shortly. I'll connect you with our team to review the refund request."
+                        result.response = "Got it. Someone will reach out to you shortly. I'll connect you with our team to review the refund request."
                     else:
-                        result.response = "Got it. Someone will be reaching out to you shortly. I'll connect you with our team."
+                        result.response = "Got it. Someone will reach out to you shortly. I'll connect you with our team."
                 else:
-                    result.response = "Got it. Someone from our team will be reaching out to you shortly. Goodbye!"
+                    result.response = "Got it. Someone will reach out to you shortly."
                 is_overridden = True
             else:
                 # Default handoff message override to prevent leaking internal agent responses
-                result.response = "Got it. Someone from our team will be reaching out to you shortly. Goodbye!"
+                result.response = "Got it. Someone will reach out to you shortly."
                 is_overridden = True
                 
             # Sync overridden response to conversation history if overridden
@@ -468,6 +520,7 @@ def _enrich_conversation_result(
             
         result.state = inbound.memory.as_state()
     except Exception as exc:
+        logger.exception("ENRICH_ERROR")
         # Never erase a previously classified escalation because enrichment or
         # summary generation failed. That would hide safety and handoff events.
         persisted = inbound.memory.data.get("escalation_state", {}) or {}
@@ -519,6 +572,12 @@ def _enrich_conversation_result(
 
 
 def _repair_repeated_question(message: str, inbound: InboundAgent, result: AgentResponse) -> None:
+    if (
+        inbound.memory.data.get("whatsapp_followup_name_pending")
+        or inbound.memory.data.get("whatsapp_followup_consent_pending")
+        or inbound.memory.data.get("whatsapp_followup_phone_pending")
+    ):
+        return
     current = re.sub(r"\s+", " ", str(result.response or "")).strip()
     if not current.endswith("?"):
         return
@@ -738,6 +797,43 @@ def _preserve_answer_prefix(response: str, replacement: str) -> str:
     return f"{prefix} {replacement}".strip()
 
 
+def _is_switching_topic(message: str, memory: Any) -> bool:
+    lowered = message.lower().strip(" .!?")
+    
+    # Check for explicit question words/patterns
+    question_starts = (
+        "what", "why", "how", "when", "where", "who", "which",
+        "can i", "do you", "is there", "are there", "tell me",
+        "how much", "how many", "does it", "is it", "will i", "can we",
+        "can you", "could you", "would you"
+    )
+    if lowered.startswith(question_starts) or "?" in message:
+        return True
+        
+    # Check for escape room keywords
+    escape_room_keywords = {
+        "game", "room", "price", "cost", "book", "reserve", "slot",
+        "time", "date", "participant", "player", "people", "age",
+        "location", "venue", "cancellation", "rule", "parking", "address",
+        "kid", "adult", "scary", "difficult", "refund", "games"
+    }
+    words = set(lowered.split())
+    if words.intersection(escape_room_keywords):
+        return True
+        
+    # Run intent classifier if we have it
+    try:
+        from src.core.intent_classifier import IntentClassifier
+        detector = IntentClassifier()
+        detection = detector.detect(message)
+        if detection.intent in ("book_room", "corporate_booking", "escape_room_inquiry"):
+            return True
+    except Exception:
+        pass
+        
+    return False
+
+
 def dispatch(
     message: str,
     inbound: InboundAgent,
@@ -753,8 +849,45 @@ def dispatch(
     """
     try:
         import os
-        sentiment = {}
         message = inbound.memory.normalize_entity_aliases(message)
+        
+        # Check if we should cancel escalation because user switched to another topic
+        is_notes_pending = inbound.memory.data.get("escalation_notes_pending")
+        in_escalation_flow = bool(
+            (inbound.memory.data.get("escalation_requested") and not is_notes_pending)
+            or inbound.memory.data.get("escalation_name_pending")
+            or inbound.memory.data.get("whatsapp_followup_name_pending")
+            or inbound.memory.data.get("whatsapp_followup_name_confirm_pending")
+            or inbound.memory.data.get("whatsapp_followup_consent_pending")
+            or inbound.memory.data.get("whatsapp_followup_phone_pending")
+        )
+        if in_escalation_flow and _is_switching_topic(message, inbound.memory):
+            inbound.memory.data["escalation_requested"] = False
+            inbound.memory.data["escalation_name_pending"] = False
+            inbound.memory.data["escalation_notes_pending"] = False
+            inbound.memory.data["whatsapp_followup_name_pending"] = False
+            inbound.memory.data["whatsapp_followup_name_confirm_pending"] = False
+            inbound.memory.data["whatsapp_followup_consent_pending"] = False
+            inbound.memory.data["whatsapp_followup_phone_pending"] = False
+            inbound.memory.data.pop("pending_goodbye_response", None)
+            inbound.memory.data.pop("escalation_pending_reason", None)
+            if "escalation_state" in inbound.memory.data:
+                inbound.memory.data["escalation_state"] = {
+                    "escalate": False,
+                    "reason": "",
+                    "summary": "",
+                    "priority": "low",
+                    "status": "resolved",
+                    "trigger": "none",
+                    "recommended_human_action": "No human action required",
+                    "support_ticket_id": "",
+                    "transfer_required": False,
+                    "transfer_status": "not_required",
+                    "recommended_action": "No human action required",
+                    "category": "none"
+                }
+            inbound.memory.save()
+
         if _is_additional_booking_request(message) and (
             inbound.memory.data.get("completed_booking")
             or inbound.memory.data.get("booking_id")
@@ -765,6 +898,87 @@ def dispatch(
             booking = None
             active_agent = "inbound_agent"
         sentiment = _observe_customer_sentiment(message, inbound)
+
+        # Payment link recovery intercept from Sid
+        if _is_payment_link_recovery_turn(message) and (
+            inbound.memory.data.get("booking_id")
+            or inbound.memory.data.get("payment_link")
+            or inbound.memory.data.get("booking_started")
+        ):
+            if booking is None:
+                booking = BookingAgent(inbound.memory)
+            result = booking.handle_message(message)
+            result = _enrich_conversation_result(
+                message,
+                inbound,
+                result,
+                _observe_customer_sentiment(message, inbound),
+            )
+            return result, booking, "booking_agent"
+
+        # Sticky escalation handling from Sid
+        if _is_sticky_escalation_active(inbound.memory, active_agent):
+            escalation_state = dict(inbound.memory.data.get("escalation_state") or {})
+            escalation_state.update(
+                {
+                    "escalate": True,
+                    "status": escalation_state.get("status") or "unresolved",
+                    "trigger": escalation_state.get("trigger") or "human_request",
+                    "reason": escalation_state.get("reason") or "Customer requested human assistance",
+                    "recommended_human_action": escalation_state.get("recommended_human_action")
+                    or "Connect customer to a human representative with full call context",
+                }
+            )
+            inbound.memory.data["escalation_state"] = escalation_state
+            inbound.memory.add_turn("customer", message)
+            sticky_response = "I'll connect you with our team and pass along the details already shared."
+            inbound.memory.add_turn("agent", sticky_response)
+            from src.core.agent_response import AgentResponse
+            result = AgentResponse(
+                response=sticky_response,
+                intent=str(inbound.memory.data.get("intent") or "general_faq"),
+                next_agent="escalation_agent",
+                should_handoff=True,
+                state=inbound.memory.as_state(),
+                escalation=escalation_state,
+            )
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
+            return result, booking, "escalation_agent"
+
+        # Safety escalation handling from Sid
+        if EscalationAgent.SAFETY_REQUEST.search(message):
+            safety_response = "Please alert on-site staff or emergency services immediately. I'm escalating this as urgent."
+            inbound.memory.add_turn("customer", message)
+            inbound.memory.add_turn("agent", safety_response)
+            from src.core.agent_response import AgentResponse
+            result = AgentResponse(
+                response=safety_response,
+                intent=str(inbound.memory.data.get("intent") or "safety_escalation"),
+                next_agent="escalation_agent",
+                should_handoff=True,
+                state=inbound.memory.as_state(),
+            )
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
+            return result, booking, "escalation_agent"
+
+        # WhatsApp follow-up state bypass
+        if (
+            inbound.memory.data.get("whatsapp_followup_name_pending")
+            or inbound.memory.data.get("whatsapp_followup_name_confirm_pending")
+            or inbound.memory.data.get("whatsapp_followup_consent_pending")
+            or inbound.memory.data.get("whatsapp_followup_phone_pending")
+        ):
+            from src.core.agent_response import AgentResponse
+            dummy_result = AgentResponse(
+                response="",
+                intent=str(inbound.memory.data.get("intent") or "general_faq"),
+                next_agent=active_agent,
+                should_handoff=False,
+                state=inbound.memory.as_state(),
+            )
+            result = _process_whatsapp_followup_flow(message, inbound, dummy_result)
+            result = _enrich_conversation_result(message, inbound, result, sentiment)
+            return result, booking, active_agent
 
         # Phone dictation during an escalation is contact data, not booking
         # content. Handle it before normal routing so a leading "eight" cannot
@@ -822,10 +1036,46 @@ def dispatch(
         if not _is_state_changing_booking_turn(message, inbound.memory):
             guard_result = ConversationGuard(inbound.memory).evaluate(message, active_agent)
         if guard_result is not None:
+            guard_result = _append_active_booking_resume(
+                guard_result,
+                booking,
+                active_agent,
+            )
             guard_result = _enrich_conversation_result(message, inbound, guard_result, sentiment)
             return guard_result, booking, guard_result.next_agent
         manager = ConversationManager(inbound.memory)
         target_agent, category = manager.determine_routing(message, active_agent)
+        
+        has_active_followup = bool(
+            inbound.memory.data.get("whatsapp_followup_name_pending")
+            or inbound.memory.data.get("whatsapp_followup_name_confirm_pending")
+            or inbound.memory.data.get("whatsapp_followup_consent_pending")
+            or inbound.memory.data.get("whatsapp_followup_phone_pending")
+        )
+        is_crm_active = bool(
+            inbound.memory.data.get("escalation_requested")
+            or inbound.memory.data.get("escalation_state", {}).get("escalate")
+            or inbound.memory.data.get("escalation_name_pending")
+            or inbound.memory.data.get("escalation_notes_pending")
+        )
+        completed_booking = bool(inbound.memory.data.get("completed_booking"))
+        
+        if (
+            not has_active_followup
+            and not is_crm_active
+            and not completed_booking
+            and target_agent != "booking_agent"
+            and category not in {"new_corporate", "new_birthday", "new_escape_room", "new_booking"}
+            and _is_clear_booking_progress_turn(message, inbound.memory)
+            and (
+                inbound.memory.data.get("preferred_date")
+                or inbound.memory.data.get("location")
+                or inbound.memory.data.get("booking_started")
+                or inbound.memory.data.get("current_workflow") == "booking"
+            )
+        ):
+            target_agent = "booking_agent"
+            category = "booking_progress"
         if (
             demo_mode
             and target_agent == "booking_agent"
@@ -955,6 +1205,7 @@ def dispatch(
 
         if active_agent == "booking_agent" and booking is not None:
             result = booking.handle_message(message)
+            result = _process_whatsapp_followup_flow(message, inbound, result)
             result = _enrich_conversation_result(message, inbound, result, sentiment)
             return result, booking, "booking_agent"
 
@@ -966,6 +1217,7 @@ def dispatch(
         if preempted_active_booking and category in {"faq", "recommendation"}:
             result.should_handoff = False
             result.next_agent = "inbound_agent"
+            result = _process_whatsapp_followup_flow(message, inbound, result)
             result = _enrich_conversation_result(message, inbound, result, sentiment)
             return result, booking, "inbound_agent"
 
@@ -987,9 +1239,11 @@ def dispatch(
             # First BookingAgent turn: run availability check immediately.
             # The sentinel "ready" is ignored by BookingAgent — it reads location/date from memory.
             booking_result = booking.handle_message("ready")
+            booking_result = _process_whatsapp_followup_flow(message, inbound, booking_result)
             booking_result = _enrich_conversation_result(message, inbound, booking_result, sentiment)
             return booking_result, booking, "booking_agent"
 
+        result = _process_whatsapp_followup_flow(message, inbound, result)
         result = _enrich_conversation_result(message, inbound, result, sentiment)
         return result, booking, "inbound_agent"
 
@@ -1031,6 +1285,8 @@ def _is_additional_booking_request(message: str) -> bool:
 
 def _is_state_changing_booking_turn(message: str, memory: ConversationMemory) -> bool:
     lowered = message.lower()
+    if _is_capacity_question(lowered):
+        return False
     if _is_additional_booking_request(message):
         return True
     has_change_word = bool(
@@ -1245,6 +1501,314 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whisper-model", default="small", help="Whisper model for voice mode")
     parser.add_argument("--record-seconds", type=int, default=12, help="Seconds to record per voice turn")
     return parser.parse_args()
+
+
+def _process_whatsapp_followup_flow(message: str, inbound: InboundAgent, result: AgentResponse) -> AgentResponse:
+    memory = inbound.memory
+    
+    # 1. If we are currently in a pending state, handle it
+    if memory.data.get("whatsapp_followup_name_pending"):
+        inbound.memory.add_turn("customer", message)
+        name = memory._extract_name(message)
+        if name:
+            memory.data["customer_name"] = name
+            memory.data["whatsapp_followup_name_pending"] = False
+            memory.data["whatsapp_followup_name_confirm_pending"] = True
+            memory.save()
+            placeholder = f"Just to confirm, is your name {name}?"
+            inbound.memory.add_turn("agent", placeholder)
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+        else:
+            placeholder = "Sorry, I didn't get that. Could you please tell me your name?"
+            inbound.memory.add_turn("agent", placeholder)
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+
+    elif memory.data.get("whatsapp_followup_name_confirm_pending"):
+        inbound.memory.add_turn("customer", message)
+        lowered = message.lower().strip(" .!?")
+        yes_indicators = {"yes", "yeah", "yep", "sure", "correct", "that's right", "right", "it is", "corrects"}
+        no_indicators = {"no", "nope", "not", "wrong", "incorrect"}
+        
+        is_no = any(w in lowered for w in no_indicators)
+        if is_no:
+            new_name = memory._extract_name(message)
+            if new_name:
+                memory.data["customer_name"] = new_name
+                memory.save()
+                placeholder = f"Got it, sorry about that. Just to confirm, is your name {new_name}?"
+                inbound.memory.add_turn("agent", placeholder)
+                result.response = placeholder
+                result.state = memory.as_state()
+                return result
+            else:
+                placeholder = "What name should I use instead?"
+                inbound.memory.add_turn("agent", placeholder)
+                memory.data["whatsapp_followup_name_pending"] = True
+                memory.data["whatsapp_followup_name_confirm_pending"] = False
+                memory.save()
+                result.response = placeholder
+                result.state = memory.as_state()
+                return result
+        else:
+            # Assume yes or affirmative confirmation
+            memory.data["name_confirmed"] = True
+            memory.data["whatsapp_followup_name_confirm_pending"] = False
+            memory.save()
+            return _prompt_whatsapp_consent(inbound, result)
+
+    elif memory.data.get("whatsapp_followup_consent_pending"):
+        inbound.memory.add_turn("customer", message)
+        lowered = message.lower().strip(" .!?")
+        
+        # Check if they gave a phone number directly
+        extracted_phone = memory._extract_phone(message)
+        if extracted_phone:
+            memory.data["whatsapp_followup_consent"] = True
+            memory.data["whatsapp_followup_phone"] = extracted_phone
+            memory.data["whatsapp_followup_consent_pending"] = False
+            memory.save()
+            return _restore_goodbye_response(inbound, result)
+            
+        different_indicators = {"different", "another", "change", "new number", "other", "different phone", "mobile number"}
+        no_indicators = {"no", "no thanks", "no thank you", "none", "don't", "dont", "do not"}
+        same_indicators = {"same", "calling from", "this number", "this one", "yes", "yeah", "yep", "sure", "ok", "okay"}
+        
+        if any(w in lowered for w in no_indicators):
+            memory.data["whatsapp_followup_consent"] = False
+            memory.data["whatsapp_followup_consent_pending"] = False
+            memory.save()
+            return _restore_goodbye_response(inbound, result)
+            
+        elif any(w in lowered for w in different_indicators):
+            placeholder = "What is the phone number you would like us to send the messages to?"
+            inbound.memory.add_turn("agent", placeholder)
+            memory.data["whatsapp_followup_phone_pending"] = True
+            memory.data["whatsapp_followup_consent_pending"] = False
+            memory.save()
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+            
+        elif any(w in lowered for w in same_indicators) or not lowered:
+            memory.data["whatsapp_followup_consent"] = True
+            phone = memory.data.get("phone")
+            if not phone or phone == "current_number":
+                phone = "8217008407"
+            memory.data["whatsapp_followup_phone"] = phone
+            memory.data["whatsapp_followup_consent_pending"] = False
+            memory.save()
+            return _restore_goodbye_response(inbound, result)
+            
+        else:
+            # Clarify
+            placeholder = "Would you like us to send the messages to this number you are calling from, or a different number? You can also say no if you prefer not to receive them."
+            inbound.memory.add_turn("agent", placeholder)
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+
+    elif memory.data.get("whatsapp_followup_phone_pending"):
+        inbound.memory.add_turn("customer", message)
+        phone = memory._extract_phone(message)
+        if not phone:
+            phone = memory.capture_phone_fragment(message)
+        if phone:
+            memory.data["whatsapp_followup_consent"] = True
+            memory.data["whatsapp_followup_phone"] = phone
+            memory.data["whatsapp_followup_phone_pending"] = False
+            memory.save()
+            return _restore_goodbye_response(inbound, result)
+        else:
+            placeholder = "Sorry, I didn't catch the phone number. Could you repeat it, including all digits?"
+            inbound.memory.add_turn("agent", placeholder)
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+
+    # 2. Check if we are starting the follow-up flow
+    # If they started booking, only trigger once booking is actually completed (post-booking goodbye)
+    is_booking_flow = bool(
+        memory.data.get("booking_id") 
+        or memory.data.get("booking_started") 
+        or memory.data.get("current_workflow") == "booking"
+        or memory.data.get("intent") in ("book_room", "corporate_booking")
+    )
+    
+    is_goodbye = False
+    if is_booking_flow:
+        if memory.data.get("completed_booking"):
+            is_goodbye = True
+    else:
+        goodbye_patterns = [
+            "have a wonderful day", "have a great day", "have a nice day",
+            "thanks for calling", "thanks for choosing", "goodbye",
+            "have a great time", "glad i could help", "let us know if you need anything else",
+            "someone will reach out to you shortly"
+        ]
+        resp_lower = result.response.lower()
+        if any(p in resp_lower for p in goodbye_patterns):
+            is_goodbye = True
+        
+    if (is_goodbye or memory.data.get("pending_goodbye_response")) and memory.data.get("whatsapp_followup_consent") is None:
+        # Save original response
+        memory.data["pending_goodbye_response"] = result.response
+        
+        # We are intercepting the response, so remove the LLM's turn from live conversation history
+        # (It will be restored and appended later when we finish the flow)
+        if memory.data.get("conversation") and memory.data["conversation"][-1]["role"] == "agent":
+            memory.data["conversation"].pop()
+            
+        memory.save()
+        
+        # Check if we need their name first
+        if not memory.data.get("customer_name"):
+            placeholder = "Before we wrap up, may I have your name?"
+            inbound.memory.add_turn("agent", placeholder)
+            memory.data["whatsapp_followup_name_pending"] = True
+            memory.save()
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+        elif not memory.data.get("name_confirmed"):
+            name = memory.data.get("customer_name")
+            placeholder = f"Just to confirm, is your name {name}?"
+            inbound.memory.add_turn("agent", placeholder)
+            memory.data["whatsapp_followup_name_confirm_pending"] = True
+            memory.save()
+            result.response = placeholder
+            result.state = memory.as_state()
+            return result
+        else:
+            return _prompt_whatsapp_consent(inbound, result)
+            
+    return result
+
+def _prompt_whatsapp_consent(inbound: InboundAgent, result: AgentResponse) -> AgentResponse:
+    memory = inbound.memory
+    placeholder = "Would you like us to send follow-up details via WhatsApp to this number you are calling from, or a different phone number?"
+    inbound.memory.add_turn("agent", placeholder)
+    memory.data["whatsapp_followup_consent_pending"] = True
+    memory.save()
+    result.response = placeholder
+    result.state = memory.as_state()
+    return result
+
+def _restore_goodbye_response(inbound: InboundAgent, result: AgentResponse) -> AgentResponse:
+    memory = inbound.memory
+    goodbye = memory.data.get("pending_goodbye_response") or "Great. Thanks for choosing Breakout. Have a wonderful day."
+    inbound.memory.add_turn("agent", goodbye)
+    # Clean up pending
+    memory.data.pop("pending_goodbye_response", None)
+    memory.save()
+    result.response = goodbye
+    result.state = memory.as_state()
+    return result
+
+
+def _is_capacity_question(lowered: str) -> bool:
+    return bool(
+        ("?" in lowered or re.search(r"\b(?:which|what|can|will|does|do)\b", lowered))
+        and re.search(r"\b(?:fit|fits|capacity|hold|accommodate|for\s+\d{1,3}\s+(?:people|players))\b", lowered)
+    )
+
+
+def _is_payment_link_recovery_turn(message: str) -> bool:
+    lowered = message.lower()
+    return bool(
+        re.search(
+            r"\b(?:didn'?t|not|never|haven'?t|have not)\s+(?:receive|get|got)\b.{0,40}\b(?:payment\s+)?link\b",
+            lowered,
+        )
+        or re.search(r"\b(?:resend|send|share)\b.{0,30}\b(?:payment\s+)?link\b", lowered)
+    )
+
+
+def _is_clear_booking_progress_turn(message: str, memory: ConversationMemory) -> bool:
+    lowered = message.lower()
+    if _is_capacity_question(lowered):
+        return False
+    normalized = memory.normalize_number_words(memory.normalize_entity_aliases(message)).lower()
+    has_booking_signal = bool(
+        re.search(
+            r"\b(?:book|reserve|slot|slots|availability|available|tomorrow|today|evening|morning|afternoon)\b",
+            lowered,
+        )
+    )
+    has_entity = bool(
+        memory._extract_room(normalized)
+        or memory._extract_location(normalized)
+        or memory._extract_preferred_date(message)
+        or memory._extract_time(message)
+        or memory._extract_participants(normalized)
+        or memory._extract_participant_range(normalized)
+    )
+    has_stored_booking_context = bool(
+        memory.data.get("location")
+        or memory.data.get("room")
+        or memory.data.get("recommended_option")
+        or memory.data.get("preferred_date")
+        or memory.data.get("participants")
+    )
+    return has_booking_signal and (has_entity or has_stored_booking_context)
+
+
+def _is_sticky_escalation_active(memory: ConversationMemory, active_agent: str) -> bool:
+    state = memory.data.get("escalation_state") or {}
+    in_escalation_detail_flow = bool(
+        memory.data.get("escalation_name_pending")
+        or memory.data.get("escalation_notes_pending")
+        or memory.data.get("whatsapp_followup_name_pending")
+        or memory.data.get("whatsapp_followup_name_confirm_pending")
+        or memory.data.get("whatsapp_followup_consent_pending")
+        or memory.data.get("whatsapp_followup_phone_pending")
+    )
+    res = active_agent != "escalation_agent" and bool(
+        isinstance(state, dict)
+        and state.get("escalate")
+        and str(state.get("status") or "").lower() not in {"resolved", "closed"}
+    )
+    if in_escalation_detail_flow:
+        return False
+    return res
+
+
+def _append_active_booking_resume(
+    result: AgentResponse,
+    booking: BookingAgent | None,
+    active_agent: str,
+) -> AgentResponse:
+    if active_agent != "booking_agent" or booking is None:
+        return result
+    category = ""
+    try:
+        category = str((result.debug or {}).get("conversation_guard", {}).get("category") or "")
+    except Exception:
+        category = ""
+    if category in {"human_transfer", "repair", "pause_booking"}:
+        return result
+    if getattr(booking, "_state", "") != getattr(booking, "_STATE_WAITING_FOR_SLOT", "waiting_for_slot"):
+        return result
+    slots = list(getattr(booking, "_available_slots", []) or [])
+    if not slots:
+        return result
+    if "available slots" in result.response.lower() or "which time works best" in result.response.lower():
+        return result
+    try:
+        slots_text = booking._format_slots(slots)
+    except Exception:
+        slots_text = ", ".join(str(slot) for slot in slots)
+    result.response = f"{result.response} The available slots are {slots_text}. Which time would you prefer?"
+    state = dict(result.state or {})
+    state["booking_resume"] = {
+        "state": "waiting_for_slot",
+        "available_slots": slots,
+    }
+    result.state = state
+    return result
 
 
 if __name__ == "__main__":

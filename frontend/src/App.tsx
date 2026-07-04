@@ -923,6 +923,7 @@ function LiveCallsView({ calls, onSelectCall }: { calls: any[]; onSelectCall: (i
                 <th style={{ padding: 12 }}>Conversation ID</th>
                 <th style={{ padding: 12 }}>Assistant</th>
                 <th style={{ padding: 12 }}>Status</th>
+                <th style={{ padding: 12 }}>Sentiment</th>
                 <th style={{ padding: 12 }}>Started At</th>
                 <th style={{ padding: 12 }}>Actions</th>
               </tr>
@@ -933,6 +934,16 @@ function LiveCallsView({ calls, onSelectCall }: { calls: any[]; onSelectCall: (i
                   <td style={{ padding: 12, fontFamily: 'monospace' }}>{call.call_id}</td>
                   <td style={{ padding: 12 }}>{call.assistant_id || 'inbound_agent'}</td>
                   <td style={{ padding: 12 }}><Badge label={call.status || 'Active'} color="green" /></td>
+                  <td style={{ padding: 12 }}>
+                    <Badge 
+                      label={call.sentiment?.sentiment || 'neutral'} 
+                      color={
+                        call.sentiment?.sentiment === 'angry' || call.sentiment?.sentiment === 'frustrated' ? 'red' 
+                        : call.sentiment?.sentiment === 'excited' || call.sentiment?.sentiment === 'happy' ? 'green' 
+                        : 'gray'
+                      } 
+                    />
+                  </td>
                   <td style={{ padding: 12 }}>{fmt.relTime(call.started_at)}</td>
                   <td style={{ padding: 12 }}><Btn size="xs" onClick={() => onSelectCall(call.call_id)}>Open Console</Btn></td>
                 </tr>

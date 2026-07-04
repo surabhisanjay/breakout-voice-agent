@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from typing import Any, Dict, List, Optional
-from datetime import date as calendar_date, datetime, timedelta
+from datetime import date as calendar_date, datetime, timedelta, timezone
 
 from ..integrations.kreeda.breakout_booking_provider import BreakoutBookingProvider
 from ..integrations.kreeda.agent_contract_provider import AgentContractProvider
@@ -37,7 +37,8 @@ class BookingOrchestrator:
         self.fallback_reason = ""
 
         provider_mode = os.environ.get("BOOKING_PROVIDER", "auto").strip().lower()
-        if should_use_live_booking():
+        explicit_live_provider = booking_provider is not None
+        if explicit_live_provider or should_use_live_booking():
             try:
                 from ..integrations.kreeda.breakout_api import BreakoutAPI
                 self.booking_provider = booking_provider or BreakoutBookingProvider(
@@ -363,9 +364,12 @@ class BookingOrchestrator:
                     "lastName": api_last_name,
                     "phone": self._international_phone(str(memory.get("phone", ""))),
                 },
-                "sendPaymentRequest": False,
+                "sendPaymentRequest": self._send_payment_request_enabled(memory),
                 "idempotencyKey": idempotency_key,
             }
+            simulate_payment = self._simulate_payment_request()
+            if simulate_payment:
+                create_payload["simulatePayment"] = simulate_payment
             logger.info(
                 "Kreeda booking request: venueId=%s cartId=%s gameId=%s customer=%s phone_suffix=%s",
                 venue_id,
@@ -386,13 +390,12 @@ class BookingOrchestrator:
             booking_reference = self._record_value(
                 result, ("orderId", "bookingReference", "bookingRef", "reference")
             )
-            raw_status = str(result.get("status", "") or "PAYMENT_PENDING").upper()
-            has_payment_url = bool(result.get("paymentUrl") or result.get("orderUrl"))
-            status = "PAYMENT_PENDING" if has_payment_url and raw_status in {"RESERVED", "PENDING"} else raw_status
+            raw_status = str(result.get("status", "") or "RESERVED").upper()
+            status = "RESERVED" if raw_status in {"RESERVED", "PENDING", "PAYMENT_PENDING"} else raw_status
             confirmed = bool(
                 booking_id
                 and booking_reference
-                and status in {"CONFIRMED", "BOOKED", "RESERVED", "PAYMENT_PENDING", "PENDING"}
+                and status in {"CONFIRMED", "BOOKED", "RESERVED"}
             )
             logger.info(
                 "Kreeda booking response: bookingId=%s response_keys=%s",
@@ -410,8 +413,8 @@ class BookingOrchestrator:
                 logger.info("BOOKING_ID=%s", booking_id)
                 logger.info("BOOKING_REFERENCE=%s", booking_reference)
                 logger.info("BOOKING_REF=%s", booking_reference)
-                if status in {"PAYMENT_PENDING", "PENDING"}:
-                    logger.info("PAYMENT_PENDING=true bookingId=%s", booking_id)
+                if status == "RESERVED":
+                    logger.info("PAYMENT_RESERVED=true bookingId=%s", booking_id)
             else:
                 logger.warning(
                     "KREEDA_CREATE_BOOKING_FAILURE reason=unconfirmed_response bookingId=%s bookingReference=%s status=%s",
@@ -424,11 +427,13 @@ class BookingOrchestrator:
                 "booking_reference": booking_reference,
                 "order_id": result.get("orderId", ""),
                 "order_url": result.get("orderUrl", ""),
-                "payment_url": result.get("paymentUrl") or (
-                    (result.get("orderUrl") + ("&pr=true" if "?" in str(result.get("orderUrl")) else "?pr=true"))
-                    if result.get("orderUrl") and "PYTEST_CURRENT_TEST" not in os.environ
-                    else result.get("orderUrl", "")
-                ),
+                "payment_url": result.get("paymentUrl") or "",
+                "payment_deadline": result.get("paymentDeadline") or "",
+                "totals": result.get("totals") if isinstance(result.get("totals"), dict) else {},
+                "email_notification_sent": bool(result.get("emailNotificationSent", False)),
+                "whatsapp_notification_sent": bool(result.get("whatsappNotificationSent", False)),
+                "venue_id": result.get("venueId") or venue_id,
+                "payment_status": "PAID" if status in {"CONFIRMED", "BOOKED"} else "UNPAID",
                 "status": status,
                 "confirmed": confirmed,
                 "prepared": True,
@@ -539,17 +544,104 @@ class BookingOrchestrator:
 
     def check_payment_status(self, venue_id: str, booking_id: str) -> dict[str, Any]:
         """
-        Check the payment status of a booking.
-        Routes to BreakoutBookingProvider in live mode, or SimulatorProvider in mock mode.
+        Payment verification must use Kreeda's check_payment_status tool.
+        find_booking is intentionally not used for payment state.
         """
         if not self.is_live:
-            return self.simulator.check_payment_status(venue_id, booking_id)
-        return self.booking_provider.check_payment_status(venue_id, booking_id)
+            return self.simulator_check_payment_status(venue_id, booking_id)
+        if self.booking_provider and hasattr(self.booking_provider, "check_payment_status"):
+            return self.booking_provider.check_payment_status(venue_id, booking_id)
+        return self._contract().check_payment_status(venue_id, booking_id)
+
+    def simulate_payment(self, venue_id: str, booking_id: str, outcome: str = "success") -> dict[str, Any]:
+        if not self.is_live:
+            return self.simulator_simulate_payment(venue_id, booking_id, outcome)
+        if self.booking_provider and hasattr(self.booking_provider, "simulate_payment"):
+            return self.booking_provider.simulate_payment(venue_id, booking_id, outcome)
+        return self._contract().simulate_payment(venue_id, booking_id, outcome)
+
+    def simulator_check_payment_status(self, venue_id: str, booking_id: str) -> dict[str, Any]:
+        booking = self.simulator.bookings.get(booking_id) or {}
+        status = str(booking.get("status") or "RESERVED").upper()
+        is_paid = status == "CONFIRMED"
+        deadline = str(booking.get("payment_deadline") or "")
+        if not is_paid and deadline and self._deadline_passed(deadline):
+            status = "EXPIRED"
+            booking["status"] = status
+            booking["payment_status"] = "EXPIRED"
+        total = float(booking.get("total") or 0)
+        paid = total if is_paid else 0.0
+        return {
+            "bookingId": booking_id,
+            "orderId": booking.get("order_id") or booking.get("booking_reference") or "",
+            "venueId": venue_id or booking.get("venue_id") or "",
+            "status": status,
+            "isPaid": is_paid,
+            "paymentDeadline": deadline,
+            "totals": {
+                "subtotal": total,
+                "currency": "INR",
+                "total": total,
+                "paid": paid,
+                "due": 0.0 if is_paid else total,
+            },
+        }
+
+    def simulator_simulate_payment(self, venue_id: str, booking_id: str, outcome: str = "success") -> dict[str, Any]:
+        booking = self.simulator.bookings.setdefault(booking_id, {"booking_id": booking_id, "venue_id": venue_id})
+        if outcome == "success":
+            booking["status"] = "CONFIRMED"
+            booking["payment_status"] = "PAID"
+        else:
+            booking["status"] = "RESERVED"
+            booking["payment_status"] = "UNPAID"
+        status = str(booking["status"])
+        return {
+            "bookingId": booking_id,
+            "orderId": booking.get("order_id") or booking.get("booking_reference") or "",
+            "status": status,
+            "isPaid": status == "CONFIRMED",
+            "outcome": outcome,
+            "simulated": True,
+            "alreadyPaid": False,
+            "totals": self.simulator_check_payment_status(venue_id, booking_id).get("totals", {}),
+        }
 
     def _contract(self) -> AgentContractProvider:
         if self.contract_provider is None:
             self.contract_provider = AgentContractProvider(timeout=2.0)
         return self.contract_provider
+
+    @staticmethod
+    def _send_payment_request_enabled(memory: dict[str, Any]) -> bool:
+        value = memory.get("sendPaymentRequest", memory.get("send_payment_request", True))
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off"}
+        return bool(value)
+
+    @staticmethod
+    def _simulate_payment_request() -> dict[str, Any] | None:
+        raw = os.environ.get("SIMULATE_PAYMENT", "").strip().lower()
+        if not raw or raw in {"0", "false", "no", "off"}:
+            return None
+        outcome = "failure" if raw in {"fail", "failure", "failed", "unpaid"} else "success"
+        delay_raw = os.environ.get("SIMULATE_PAYMENT_DELAY_SECONDS", "0")
+        try:
+            delay_seconds = max(0, min(int(float(delay_raw)), 60))
+        except (TypeError, ValueError):
+            delay_seconds = 0
+        return {"outcome": outcome, "delaySeconds": delay_seconds}
+
+    @staticmethod
+    def _deadline_passed(value: str) -> bool:
+        try:
+            normalised = value.replace("Z", "+00:00")
+            deadline = datetime.fromisoformat(normalised)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= deadline.astimezone(timezone.utc)
+        except ValueError:
+            return False
 
     # ------------------------------------------------------------------ #
     # LangGraph Compatibility Methods                                     #
@@ -908,15 +1000,3 @@ class BookingOrchestrator:
             return ""
         first = value.split()[0]
         return f"{first[:1]}***"
-
-    def get_venue_id_for_name(self, location_name: str) -> str:
-        if not location_name:
-            return ""
-        try:
-            locations = self.booking_provider.get_booking_venues()
-            record = self._match_record(locations, ("venueName", "locationName", "name"), location_name)
-            if record:
-                return str(self._record_value(record, ("venueId", "locationId", "id", "_id")) or "")
-        except Exception:
-            pass
-        return ""

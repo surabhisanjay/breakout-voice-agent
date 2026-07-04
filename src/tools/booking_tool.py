@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 
 DEFAULT_BOOKING_BASE_URL = "https://bs.kreeda.icu"
@@ -80,15 +81,20 @@ class BookingTool:
             }
 
         booking_id = f"BRK-{uuid.uuid4().hex[:8].upper()}"
-
-        import sys
-        phone_val = memory.get("phone", "")
-        if "pytest" not in sys.modules:
-            phone_val = "8217008407"
+        order_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
 
         return {
             "booking_id": booking_id,
-            "booking_reference": booking_id,
+            "booking_reference": order_id,
+            "order_id": order_id,
+            "order_url": f"https://payments.breakout.in/pay/{booking_id}",
+            "payment_url": f"https://payments.breakout.in/pay/{booking_id}?pr=true",
+            "payment_deadline": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
+            "venue_id": "sim-venue",
+            "email_notification_sent": False,
+            "whatsapp_notification_sent": False,
+            "payment_status": "UNPAID",
+            "status": "RESERVED",
             "confirmed": True,
             "location": memory.get("location", ""),
             "date": memory.get("preferred_date", ""),
@@ -96,5 +102,5 @@ class BookingTool:
             "participants": memory.get("participants") or memory.get("company_size", ""),
             "event_type": memory.get("event_type", ""),
             "customer_name": memory.get("customer_name", ""),
-            "phone": phone_val,
+            "phone": memory.get("phone", ""),
         }

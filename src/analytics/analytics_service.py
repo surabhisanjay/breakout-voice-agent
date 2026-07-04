@@ -935,10 +935,13 @@ class AnalyticsService:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT c.session_id, c.direction, c.status, c.started_at, c.duration,
+                SELECT c.session_id, c.direction,
+                       CASE WHEN e.session_id IS NOT NULL THEN 'escalated' ELSE c.status END as status,
+                       c.started_at, c.duration,
                        ap.agent_id, ap.team_id
                 FROM calls c
                 LEFT JOIN agent_performance ap ON c.session_id = ap.session_id
+                LEFT JOIN escalations e ON c.session_id = e.session_id
                 ORDER BY c.started_at DESC
                 """
             )

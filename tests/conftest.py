@@ -23,6 +23,7 @@ def _patch_httpx_testclient_compatibility() -> None:
 
 _patch_httpx_testclient_compatibility()
 
+
 @pytest.fixture(scope="session", autouse=True)
 def clean_test_environment():
     # Force empty credentials for the test run to isolate from any local .env file

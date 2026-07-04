@@ -36,6 +36,7 @@ def _memory(tmp_path: Path, **updates) -> ConversationMemory:
         "location": "JP Nagar",
         "preferred_date": "2026-06-25",
         "room": "Murder Mystery",
+        "time_preference": "any",
     })
     memory.data.update(updates)
     memory.save()
@@ -151,8 +152,6 @@ def test_booking_agent_restart_revalidates_and_completes_persisted_slot(tmp_path
 
 def test_handoff_summary_failure_never_suppresses_escalation(tmp_path, monkeypatch) -> None:
     memory = ConversationMemory(tmp_path / "handoff.json")
-    memory.data["phone"] = "9876543210"
-    memory.save()
     inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
     monkeypatch.setattr(
         main_module.HandoffSummaryAgent,
@@ -165,6 +164,48 @@ def test_handoff_summary_failure_never_suppresses_escalation(tmp_path, monkeypat
     assert result.escalation["escalate"] is True
     assert result.next_agent == "escalation_agent"
     assert result.handoff_summary["summary"]
+
+
+def test_short_human_transfer_requests_escalate_through_dispatch(tmp_path) -> None:
+    for idx, message in enumerate(("transfer me", "I don't want AI")):
+        memory = ConversationMemory(tmp_path / f"handoff-short-{idx}.json")
+        inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
+
+        result, _, _ = dispatch(message, inbound, None, "inbound_agent")
+
+        assert result.should_handoff is True
+        assert result.next_agent == "escalation_agent"
+        assert result.escalation["escalate"] is True
+        assert result.escalation["trigger"] == "human_request"
+        assert result.handoff_summary["summary"]
+
+
+def test_frustration_escalation_does_not_capture_complaint_as_name(tmp_path) -> None:
+    memory = ConversationMemory(tmp_path / "frustration.json")
+    inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
+
+    result, _, _ = dispatch("This is useless", inbound, None, "inbound_agent")
+
+    assert result.should_handoff is True
+    assert result.next_agent == "escalation_agent"
+    assert result.escalation["escalate"] is True
+    assert "connect you" in result.response.lower()
+    assert not memory.data.get("customer_name")
+    assert "useless" not in result.response.lower()
+
+
+def test_escalation_state_remains_active_after_handoff(tmp_path) -> None:
+    memory = ConversationMemory(tmp_path / "sticky-escalation.json")
+    inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
+
+    first, booking, active = dispatch("I want a human", inbound, None, "inbound_agent")
+    second, _, _ = dispatch("I also need parking details", inbound, booking, active)
+
+    assert first.escalation["escalate"] is True
+    assert second.escalation["escalate"] is True
+    assert second.next_agent == "escalation_agent"
+    assert "connect you" in second.response.lower()
+    assert memory.data["escalation_state"]["escalate"] is True
 
 
 def test_chat_response_exposes_handoff_metadata(monkeypatch) -> None:
@@ -277,7 +318,7 @@ def test_cancel_without_reference_waits_for_reference_and_validates_result(tmp_p
     assert "successfully cancelled" in second.response.lower()
 
 
-def test_repeated_identical_question_escalates_instead_of_looping(tmp_path) -> None:
+def test_repeated_unclassified_input_does_not_escalate_without_customer_complaint(tmp_path) -> None:
     memory = ConversationMemory(tmp_path / "loop.json")
     inbound = build_inbound_agent(Namespace(model=None, no_openai=True), memory)
     booking = None
@@ -285,8 +326,11 @@ def test_repeated_identical_question_escalates_instead_of_looping(tmp_path) -> N
     final = None
     for _ in range(3):
         final, booking, active = dispatch("blah blah blah xyz", inbound, booking, active)
-        print("TURN:", _, "NEXT_AGENT:", final.next_agent, "ESCALATION:", final.escalation)
     assert final is not None
-    print("FINAL_NEXT_AGENT:", final.next_agent, "FINAL_ESCALATION:", final.escalation)
-    assert final.next_agent == "escalation_agent"
-    assert final.escalation["reason"] == "Repeated conversation loop detected"
+    assert final.next_agent != "escalation_agent"
+    assert not final.escalation["escalate"]
+
+    complained, booking, active = dispatch("You keep repeating yourself.", inbound, booking, active)
+
+    assert complained.next_agent == "escalation_agent"
+    assert complained.escalation["reason"] == "Repeated misunderstanding reported by customer"

@@ -143,13 +143,14 @@ class TestUnknownLocationGuard:
             reason="urgency and teamwork",
             lowered="what room do you recommend?",
         )
-        forbidden = ["hostage", "murder mystery", "classified", "bomb defusal",
-                     "prison break", "undercover", "jp nagar", "whitefield", "koramangala"]
+        forbidden = ["jp nagar", "whitefield", "koramangala"]
         response_lower = response.lower()
         for term in forbidden:
             assert term not in response_lower, (
-                f"Room/branch '{term}' appeared without location: {response!r}"
+                f"Branch '{term}' appeared without location: {response!r}"
             )
+        assert "murder mystery" in response_lower or "hostage" in response_lower
+        assert "location" in response_lower
         assert "location" in response_lower, (
             f"Should ask for location but got: {response!r}"
         )
@@ -198,8 +199,8 @@ class TestUnknownLocationGuard:
         response_lower = result.response.lower()
         assert "location" in response_lower
         assert "how many" not in response_lower
-        for term in ("murder mystery", "hostage", "bomb defusal", "prison break"):
-            assert term not in response_lower
+        assert "murder mystery" in response_lower
+        assert "share the branch" in response_lower
 
     def test_best_room_without_location_asks_location_not_room_or_branch(self):
         result, _, _, _ = _dispatch_once("Which room is best?")
@@ -207,7 +208,9 @@ class TestUnknownLocationGuard:
         response_lower = result.response.lower()
         assert "location" in response_lower
         assert "how many" not in response_lower
-        for term in ("murder mystery", "hostage", "jp nagar", "whitefield", "koramangala"):
+        assert "murder mystery" in response_lower
+        assert "share the branch" in response_lower
+        for term in ("jp nagar", "whitefield", "koramangala"):
             assert term not in response_lower
 
 

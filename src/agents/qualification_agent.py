@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..memory.conversation_memory import ConversationMemory
+from ..services.conversation_resolution import ConversationResolver
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ class QualificationResult:
 
 class QualificationAgent:
     REQUIRED_BY_INTENT = {
-        "escape_room_inquiry": ["event_type", "participants", "age_group", "location"],
+        "escape_room_inquiry": ["event_type", "participants", "location"],
         "birthday_party": [
             "event_type", "participants", "location", "preferred_date",
             "age_group", "food_required", "budget_range",
@@ -53,10 +54,10 @@ class QualificationAgent:
 
     QUESTIONS = {
         "event_type": "Sure. What kind of event are you planning?",
-        "participants": "Got it. How many people are joining?",
-        "location": "Nice. Which location works best: Koramangala, Whitefield, or JP Nagar?",
+        "participants": "How many people are joining?",
+        "location": "Which location would you like to visit?",
         "preferred_date": "Got it. What date are you planning for?",
-        "age_group": "Is the group mostly adults, kids, or a mix? That'll help me recommend the best experience for your group.",
+        "age_group": "What age group are the players: adults, kids, or a mix?",
         "food_required": "Sounds good. Do you need food and beverages as well?",
         "budget_range": "Got it. What's the budget range: Basic, Standard, or Premium?",
         "customer_name": "Perfect. What's your name?",
@@ -66,25 +67,29 @@ class QualificationAgent:
 
     # Warm acknowledgment spoken before the next question
     _ACK_PREFIXES: dict[str, str] = {
-        "location": "Perfect.",
-        "preferred_date": "Nice.",
+        "location": "",
+        "preferred_date": "",
         "preferred_time": "Got it.",
         "customer_name": "",          # filled dynamically using the name
-        "phone": "Perfect.",
+        "phone": "",
         "food_required": "Got it.",
         "budget_range": "Sounds good.",
-        "participants": "Nice.",
-        "age_group": "Perfect.",
+        "participants": "",
+        "age_group": "",
         "email": "Got it.",
     }
 
     def __init__(self, memory: ConversationMemory):
         self.memory = memory
+        self.resolver = ConversationResolver()
         # Tracks which field we explicitly asked for on the previous turn.
         # Validation only applies when _waiting_for matches the expected field.
         self._waiting_for: str = ""
 
     def next_missing_field(self, intent: str) -> str:
+        resolution = self.resolver.resolve(self.memory.data)
+        if resolution.next_required_fact:
+            return resolution.next_required_fact
         required = self.REQUIRED_BY_INTENT.get(intent, [])
         missing = [field for field in required if not self._has_value(field)]
         return missing[0] if missing else ""
@@ -93,8 +98,15 @@ class QualificationAgent:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
         required = self.REQUIRED_BY_INTENT.get(active_intent, [])
         missing = [field for field in required if not self._has_value(field)]
+        resolution = self.resolver.resolve(self.memory.data)
+        if resolution.next_required_fact and resolution.next_required_fact not in missing:
+            missing.insert(0, resolution.next_required_fact)
+        elif resolution.next_required_fact in missing:
+            missing = [resolution.next_required_fact] + [
+                field for field in missing if field != resolution.next_required_fact
+            ]
         if missing:
-            next_question = self.QUESTIONS.get(missing[0], "")
+            next_question = self._question_for_field(missing[0])
         else:
             next_question = "Qualification complete."
 
@@ -106,6 +118,15 @@ class QualificationAgent:
             summary=self._summary(not missing),
             response=response,
         )
+
+    def _question_for_field(self, field: str) -> str:
+        if field == "time_preference":
+            return "What time works best: morning, afternoon, evening, or a specific time?"
+        if field == "selected_slot":
+            return "Which available slot would you prefer?"
+        if field == "experience_level":
+            return "First time playing, or have you done escape rooms before?"
+        return self.QUESTIONS.get(field, "")
 
     def update_and_qualify(self, message: str, intent: str | None = None) -> QualificationResult:
         active_intent = intent or self.memory.data.get("intent", "general_faq")
@@ -190,48 +211,6 @@ class QualificationAgent:
         if field == "preferred_time":
             preferred_time = str(self.memory.data.get("preferred_time", "")).strip()
             return f"Got it, {preferred_time}." if preferred_time else "Got it."
-        if field == "participants":
-            participants = self.memory.data.get("participants") or self.memory.data.get("company_size")
-            if participants:
-                event_type = str(self.memory.data.get("event_type", "")).lower()
-                if "corporate" in event_type or "team" in event_type:
-                    return f"Perfect, a team of {participants} is a great group size. You guys are going to have a lot of fun together."
-                else:
-                    return f"Perfect, {participants} players is a great group size. You guys are going to have a lot of fun together."
-            return "Nice."
-        if field == "location":
-            location = self.memory.data.get("location", "")
-            if location:
-                return f"Perfect, {location} is a fantastic spot. We have some really exciting rooms there."
-            return "Perfect."
-        if field == "experience_level":
-            level = self.memory.data.get("experience_level", "")
-            if level == "beginner":
-                return "Awesome, first visits are a lot of fun. We'll find the perfect room for you."
-            elif level == "experienced":
-                return "Awesome, experienced players! You guys are going to love the challenge here."
-        if field == "age_group":
-            age = str(self.memory.data.get("age_group", "")).lower()
-            if age == "kids":
-                return "Perfect, kids are going to have an absolute blast."
-            elif age == "adults":
-                return "Got it, an adult group."
-            elif age == "mix":
-                return "Perfect, a mix of players is great for escape rooms."
-            return f"Got it, {age}." if age else "Perfect."
-        if field == "food_required":
-            food = self.memory.data.get("food_required")
-            if food is True:
-                return "Got it, food options make hosting so much easier."
-            elif food is False:
-                return "No worries, we can focus entirely on the games."
-        if field == "budget_range":
-            budget = str(self.memory.data.get("budget_range", "")).lower()
-            if budget == "premium":
-                return "Perfect, our premium packages include all the best details."
-            elif budget == "basic":
-                return "No worries, we can keep it simple and focused."
-            return f"Got it, {budget}." if budget else "Sounds good."
         return self._ACK_PREFIXES.get(field, "")
 
     # ------------------------------------------------------------------ #
@@ -419,9 +398,13 @@ class QualificationAgent:
             "yes", "no", "okay", "ok", "sure", "hi", "hello", "hey",
             "thanks", "thank", "great", "perfect", "good", "please", "sorry",
             "we", "i", "me", "my", "your", "the", "and", "see", "you", "then",
-            "challenging", "chllangeing", "challenge", "relaxed", "adults", "kids", "hostage",
+            "something", "hard", "harder", "difficult", "challenging", "chllangeing",
+            "challenge", "intense", "thrilling", "scary", "easy", "easier",
+            "relaxed", "adults", "kids", "hostage",
             "murder", "mystery", "classified", "bomb", "defusal", "prison", "break", "undercover",
-            "escape", "room", "rooms", "game", "games"
+            "escape", "room", "rooms", "game", "games",
+            "around", "about", "morning", "afternoon", "evening", "night", "noon",
+            "today", "tomorrow", "friday", "saturday", "sunday", "weekday", "weekend",
         }
         clean = re.sub(r"[^a-zA-Z\s]", "", text).strip()
         words = clean.split()

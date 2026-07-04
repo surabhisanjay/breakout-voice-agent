@@ -200,6 +200,7 @@ def booking_memory(tmp_path: Path, participants: int = 4) -> ConversationMemory:
         "participants": participants, "age_group": "adults", "location": "Whitefield",
         "preferred_date": "24 June", "room": "Murder Mystery",
         "current_workflow": "booking",
+        "time_preference": "any",
     })
     memory.save()
     return memory
@@ -226,10 +227,7 @@ def test_price_question_stays_in_active_booking(tmp_path: Path) -> None:
 
     response = agent.handle_message("What is the price?").response
 
-    assert response == (
-        "I don't have exact pricing from the booking system right now, but I can continue "
-        "with the booking and our team can confirm the final amount."
-    )
+    assert "estimated total" in response.lower()
     assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
 
@@ -278,7 +276,7 @@ def test_booking_state_lock_ignores_faq_and_resumes_on_price(tmp_path: Path) -> 
         "What is the price?", inbound, booking, active
     )
     assert active == "booking_agent"
-    assert "exact pricing" in price.response
+    assert "estimated total" in price.response.lower()
     assert booking._available_slots == ["3:00 PM", "5:00 PM"]
 
 
@@ -332,7 +330,7 @@ def test_discount_question_never_returns_cached_slot(tmp_path: Path) -> None:
 
     response = agent.handle_message("Is there any discount available?").response
 
-    assert "discount information" in response
+    assert "10% off for 4 or more players" in response
     assert "7:00 PM is available" not in response
     assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
@@ -387,6 +385,7 @@ def test_jp_nagar_booking_executes_cart_and_booking_end_to_end(
         "intent": "escape_room_inquiry", "event_type": "Escape Room",
         "participants": 4, "age_group": "adults", "location": "JP Nagar",
         "preferred_date": "25 June", "room": "Murder Mystery",
+        "preferred_time": "7:00 PM", "time_preference": "specific",
     })
     memory.save()
     agent = BookingAgent(memory, orchestrator=orchestrator)
@@ -621,13 +620,13 @@ def test_booking_routing_acceptance_a_through_f(
     assert "what date" in result_a.response.lower()
     assert "investigation-style" not in result_a.response.lower()
 
-    # Acceptance B: a supplied date triggers availability.
+    # Acceptance B: a supplied date now asks for time preference before availability.
     inbound_b = make_inbound(tmp_path / "case-b")
     result_b, _, active_b = main_module.dispatch(
         "Book Murder Mystery at JP Nagar tomorrow.", inbound_b, None, "inbound_agent"
     )
     assert active_b == "booking_agent"
-    assert "7:00 PM" in result_b.response
+    assert "what time works best" in result_b.response.lower()
 
     # Acceptance C-F: slot -> name -> phone -> confirmation.
     inbound = make_inbound(tmp_path / "case-c-f")

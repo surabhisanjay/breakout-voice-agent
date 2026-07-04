@@ -160,11 +160,13 @@ class EscalationAgent:
             for turn in self.memory.data.get("conversation", [])
             if turn.get("role") == "agent" and turn.get("content")
         ][-3:]
+        existing_state = self.memory.data.get("escalation_state", {}) or {}
+        is_escalated = bool(existing_state.get("escalate"))
         repeated_loop = bool(
             len(recent_agent_turns) == 3
             and len(set(recent_agent_turns)) == 1
             and not self._is_active_booking_update(message)
-        )
+        ) or (is_escalated and unresolved)
         repeated_customer_question = self._is_repeated_customer_question(message)
 
         auth_failures = int(self.memory.data.get("authentication_failure_count", 0))
@@ -202,7 +204,7 @@ class EscalationAgent:
         elif repeated_loop:
             reason = "Repeated conversation loop detected"
         elif repeated_customer_question:
-            reason = "Customer repeated the same unresolved question"
+            reason = "Repeated conversation loop detected"
         elif unresolved:
             reason = "Agent could not answer the customer query"
         elif failure_count >= 2:
