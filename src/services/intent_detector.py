@@ -188,7 +188,7 @@ class IntentDetector:
 
     # ---- keyword taxonomy ----
     STRONG_TOPIC_TERMS: Dict[str, tuple] = {
-        "escape_room_inquiry": ("escape room", "room recommendation", "which room", "game", "puzzle", "hardest room", "booking", "bookings", "reserve", "reservation"),
+        "escape_room_inquiry": ("escape room", "escape route", "escape rout", "escape", "room recommendation", "which room", "game", "puzzle", "hardest room", "booking", "bookings", "reserve", "reservation"),
         "birthday_party":      ("birthday", "bday", "cake"),
         "corporate_event":     ("corporate", "office", "team building", "employee", "employees", "company", "hr", "team outing"),
         "bachelor_party":      ("bachelor", "stag", "groom"),
@@ -207,7 +207,7 @@ class IntentDetector:
         ("couple_event",         _COUPLE_PACKAGE_TERMS),
         ("corporate_event",      ("corporate", "office", "team building", "employee", "company", "hr", "team outing")),
         ("virtual_event",        ("virtual", "online", "remote", "distributed")),
-        ("escape_room_inquiry",  ("escape room", "room", "game", "puzzle", "challenge", "adults", "kids", "players", "people", "visiting", "coming", "recommend", "suggest", "compare", "friends", "group", "recommend a room", "suggest a room", "booking", "bookings", "reserve", "reservation")),
+        ("escape_room_inquiry",  ("escape room", "escape route", "escape rout", "escape", "room", "game", "puzzle", "challenge", "adults", "kids", "players", "people", "visiting", "coming", "recommend", "suggest", "compare", "friends", "group", "recommend a room", "suggest a room", "booking", "bookings", "reserve", "reservation")),
     ]
 
     FAQ_TERMS = (

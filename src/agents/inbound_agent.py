@@ -879,7 +879,7 @@ class InboundAgent:
             # The customer asked something we don't have in knowledge.
             # Be honest rather than ignoring or hallucinating.
             resume = self._resume_qualification_phrase(waiting_before) if waiting_before else ""
-            uncertain = "I'm not sure about that — our team would be the best people to help."
+            uncertain = "I don't have that specific information right now. Could you rephrase your question?"
             if resume:
                 return f"{uncertain} {resume}"
             return uncertain
@@ -996,7 +996,7 @@ class InboundAgent:
                     deterministic = self._fallback_response(
                         message, intent, recommendation, should_handoff, qual_result, waiting_before, core_changed=core_changed
                     )
-                    return deterministic or "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+                    return deterministic or "I didn't quite catch that. Could you say it another way?"
                 elif llm_response:
                     self._last_resolved_source = "openai"
                     return llm_response
@@ -1009,14 +1009,14 @@ class InboundAgent:
                     deterministic = self._fallback_response(
                         message, intent, recommendation, should_handoff, qual_result, waiting_before, core_changed=core_changed
                     )
-                    return deterministic or "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+                    return deterministic or "I didn't quite catch that. Could you say it another way?"
                 elif llm_response:
                     self._last_resolved_source = "openai"
                     return llm_response
                 else:
                     self._last_resolved_source = "deterministic_template"
 
-        fallback = "I don't have that detail to hand right now, but our team can help. May I take your name and number so someone can call you back?"
+        fallback = "I didn't quite catch that. Could you say it another way?"
         composed = self._compose_customer_response(fallback, message, intent)
         if "openai_failure" in self.response_composer.last_error:
             self._last_resolved_source = "fallback"
@@ -1682,7 +1682,7 @@ class InboundAgent:
 
             # 4. Unknown question — admit uncertainty rather than ignoring it
             if q_analysis.question_type == "unknown" and q_analysis.asked_question:
-                uncertain = "I'm not sure about that — our team would be the best people to help."
+                uncertain = "I don't have that specific information right now. Could you rephrase your question?"
                 resume = _get_resume()
                 if resume:
                     return f"{uncertain} {resume}"

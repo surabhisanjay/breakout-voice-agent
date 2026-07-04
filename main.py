@@ -1174,12 +1174,14 @@ def dispatch(
                 "experience_level": inbound.memory.data.get("experience_level", ""),
             }
             fields_to_clear = [
-                "location", "participants", "participants_min", "participants_max", "relationship", "age_group", "experience_level",
+                "participants", "participants_min", "participants_max", "relationship", "age_group", "experience_level",
                 "company_size", "event_type", "preferred_date", "food_required",
                 "preferred_time", "preferred_period", "budget_range", "intent", "recommended_option", "room",
                 "selected_slot", "booking_id", "booking_ref", "booking_order_id",
                 "payment_link", "whatsapp_payload", "completed_booking", "booking_started",
             ]
+            if not is_replacement_group:
+                fields_to_clear.append("location")
             for field in fields_to_clear:
                 inbound.memory.data[field] = ""
             inbound.memory.data["discussed_options"] = []
