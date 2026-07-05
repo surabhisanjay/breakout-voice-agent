@@ -128,6 +128,7 @@ def test_call_ended_payload_contains_frontend_contract_objects() -> None:
     assert payload.body["recommendation"]["option"] == "Murder Mystery"
     assert payload.body["evaluation"]["score"] == 93
     assert payload.body["conversation_history"][0]["text"] == "Book"
+    assert isinstance(payload.body["timestamp"], int)
 
 
 def test_escalation_payload_uses_tool_call_shape_and_handoff_data() -> None:
@@ -174,6 +175,8 @@ def test_escalation_payload_uses_tool_call_shape_and_handoff_data() -> None:
     assert payload.body["customer_intent"] == "human_request"
     assert payload.body["confidence_score"] == 0.91
     assert payload.body["preferred_contact_method"] == "whatsapp"
+    assert payload.body["triggered_at"] == "2026-07-05T10:00:00+00:00"
+    assert isinstance(payload.body["timestamp"], int)
 
 
 class _Response:

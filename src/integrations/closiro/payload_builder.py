@@ -10,6 +10,10 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _unix_timestamp() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
 def _dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -170,6 +174,7 @@ def build_call_ended_payload(session_id: str, chat_payload: dict[str, Any]) -> C
                 "call": {"id": body["call_id"]},
             },
             "ended_at": _utc_now(),
+            "timestamp": _unix_timestamp(),
             "duration_seconds": _duration_seconds(chat_payload),
             "outcome": _dict(chat_payload.get("conversation_summary")).get("outcome") or "",
         }
@@ -209,6 +214,7 @@ def build_escalation_payload(session_id: str, chat_payload: dict[str, Any]) -> C
             "priority": priority,
             "triggered_at": context["timestamp"],
             **context,
+            "timestamp": _unix_timestamp(),
         }
     )
     return ClosiroWebhookPayload(
