@@ -364,6 +364,8 @@ class ConversationGuard:
                 answer = f"I can use the {location} branch for directions. The confirmation can carry the exact map and arrival guidance."
             else:
                 answer = "Breakout has branches at Whitefield, Koramangala, and JP Nagar. Once you pick the branch, I can keep the directions tied to that booking."
+        elif "outside food" in lowered:
+            answer = "Outside food policies can vary by branch and booking type, so please confirm that with the branch team before carrying food in."
         elif re.search(r"\b(?:food|snack|snacks|meal|meals|beverages|catering)\b", lowered):
             answer = "Food options include snack boxes, hi-tea, meal options, and event menus depending on the package and branch."
         elif re.search(

@@ -90,8 +90,9 @@ def test_acceptance_a_book_room_then_change_date_clears_slot(tmp_path: Path) -> 
 
     assert agent.memory.data["preferred_date"] == "25 June"
     assert agent.memory.data["selected_slot"] == ""
-    assert "check 25 June instead" in result.response
-    assert "same room" in result.response
+    assert "checked availability for 25 June" in result.response
+    assert "8:00 PM" in result.response
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
 
 # Regression: room modification invalidates all slot/cart state.
@@ -109,10 +110,41 @@ def test_room_change_invalidates_selected_slot_and_cart(tmp_path: Path) -> None:
 # Acceptance B.
 def test_acceptance_b_book_room_then_change_room_clears_slot(tmp_path: Path) -> None:
     agent = _booking_agent_with_new_slots(tmp_path)
-    agent.handle_message("We want Hostage instead")
+    result = agent.handle_message("We want Hostage instead")
 
     assert agent.memory.data["room"] == "Hostage"
     assert agent.memory.data["selected_slot"] == ""
+    agent.availability_tool.check.assert_called_with("JP Nagar", "Tomorrow", 4)
+    assert result.response
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
+
+
+def test_location_change_during_slot_selection_refreshes_availability(tmp_path: Path) -> None:
+    agent = _booking_agent_with_new_slots(tmp_path)
+
+    result = agent.handle_message("Actually change location to Koramangala")
+
+    assert agent.memory.data["location"] == "Koramangala"
+    assert agent.memory.data["room"] == "Murder Mystery"
+    assert agent.memory.data["participants"] == 4
+    assert agent.memory.data["selected_slot"] == ""
+    agent.availability_tool.check.assert_called_with("Koramangala", "Tomorrow", 4)
+    assert "8:00 PM" in result.response
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
+
+
+def test_participant_change_during_slot_selection_refreshes_availability(tmp_path: Path) -> None:
+    agent = _booking_agent_with_new_slots(tmp_path)
+
+    result = agent.handle_message("Let's make it five people")
+
+    assert agent.memory.data["participants"] == 5
+    assert agent.memory.data["location"] == "JP Nagar"
+    assert agent.memory.data["room"] == "Murder Mystery"
+    assert agent.memory.data["selected_slot"] == ""
+    agent.availability_tool.check.assert_called_with("JP Nagar", "Tomorrow", 5)
+    assert "8:00 PM" in result.response
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
 
 # Regression: complaint clauses are not valid implicit names.

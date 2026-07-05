@@ -1241,6 +1241,9 @@ class InboundAgent:
         ):
             if not location_known:
                 return "Got it, I'll skip the first-timer filter. Which branch works best for you?"
+        preference_answer = self._recommendation_preference_update_response(lowered, intent)
+        if preference_answer:
+            return self._append_direct_answer_resume(preference_answer, waiting_before)
         if (
             intent == "escape_room_inquiry"
             and challenge == "challenging"
@@ -1318,6 +1321,60 @@ class InboundAgent:
                 )
             return ""
         return self._append_direct_answer_resume(answer, waiting_before)
+
+    def _recommendation_preference_update_response(self, lowered: str, intent: str) -> str:
+        has_recommendation_context = bool(self.memory.data.get("recommended_option") or self.memory.data.get("room"))
+        if intent != "escape_room_inquiry" and not has_recommendation_context:
+            return ""
+        if not has_recommendation_context:
+            return ""
+
+        cleaned = lowered.strip(" .!?")
+        challenge_terms = {"hard", "harder", "difficult", "challenging", "challenge", "not too easy"}
+        adventure_terms = {"adventure", "adventurous", "mission", "action"}
+        non_horror = bool(re.search(r"\b(?:not|no|avoid)\s+(?:horror|scary|spooky|jump\s*scares?)\b", cleaned))
+        wants_challenge = cleaned in challenge_terms or any(term in cleaned for term in ("harder", "challenging", "not too easy"))
+        wants_adventure = cleaned in adventure_terms or any(term in cleaned for term in ("adventure", "mission-style", "mission style"))
+        if not (non_horror or wants_challenge or wants_adventure):
+            return ""
+
+        self.memory.data["intent"] = "escape_room_inquiry"
+        if non_horror:
+            self.memory.data["theme_preference"] = "non_horror"
+        if wants_challenge:
+            self.memory.data["challenge_preference"] = "challenging"
+        if wants_adventure:
+            self.memory.data["theme_preference"] = "adventure"
+
+        prompt = "recommend a room"
+        if wants_challenge:
+            prompt += " something harder challenging"
+        if wants_adventure:
+            prompt += " adventure mission"
+        if non_horror:
+            prompt += " not horror"
+        recommendation = self._resolve_recommendation(prompt)
+        option = str(getattr(recommendation, "option", "") or "").strip()
+        if not option or option in {"challenging", "story", "adults"}:
+            options = self.recommender.available_options(self.memory.data, limit=8)
+            preferred = ["Hostage", "Undercover", "Bomb Defusal", "Classified", "Missile Attack", "Murder Mystery"]
+            option = next((room for room in preferred if room in options), self.memory.data.get("recommended_option") or "")
+        if not option:
+            return ""
+
+        self.memory.set_field("recommended_option", option, cleaned, expected_field="recommended_option")
+        self._update_discussed_options(option)
+        self.memory.save()
+
+        reasons: list[str] = []
+        if non_horror:
+            reasons.append("it avoids a horror-positioned suggestion")
+        if wants_challenge:
+            reasons.append("it is a stronger challenge fit")
+        if wants_adventure:
+            reasons.append("it has a more mission/adventure feel")
+        reason = ", and ".join(reasons) if reasons else "it better matches that preference"
+        return f"Got it — I'd adjust the pick to {option} because {reason}. Would you like to go with {option}?"
 
     def _append_direct_answer_resume(self, answer: str, waiting_before: str) -> str:
         if not waiting_before:
@@ -2038,6 +2095,16 @@ class InboundAgent:
                 "The game itself runs for around 50 minutes, so please arrive 20 minutes before your slot. "
                 "Is there a particular part of the briefing you wanted to check?"
             )
+        if "wheelchair" in lowered or "accessible" in lowered or "accessibility" in lowered:
+            return "I don't have verified accessibility details for every room here, so the branch team should confirm the exact room access before you arrive."
+        if "group photo" in lowered or "photos" in lowered or "photo" in lowered:
+            return "You can ask the branch team for a quick group photo after the game; it depends on on-site timing, but it is usually a simple request."
+        if any(term in lowered for term in ("restroom", "washroom", "bathroom", "toilet", "loo")):
+            return "If someone needs the restroom mid-game, staff can help them step out safely. It may use some game time, but safety and comfort come first."
+        if "locker" in lowered or "lockers" in lowered:
+            return "I don't have verified locker details for every branch, so the branch team should confirm storage options before you arrive."
+        if "outside food" in lowered:
+            return "Outside food policies can vary by branch and booking type, so please confirm that with the branch team before carrying food in."
         # Case 5: "Which of Murder Mystery or Hostage do you suggest/recommend" (including pronominal reference check)
         is_pronominal_suggest = ("suggest" in lowered or "recommend" in lowered or "lean" in lowered) and (
             ("murder mystery" in lowered and "hostage" in lowered) or 
@@ -2147,6 +2214,8 @@ class InboundAgent:
             return "Great. JP Nagar has Murder Mystery, Hostage, and Prison Break. Murder Mystery and Hostage are easier to start with, while Prison Break is more mission-style. What age group is the team?"
         if "hostage" in lowered and ("age" in lowered or "limit" in lowered):
             return "Hostage is listed for ages 9 and above."
+        if "outside food" in lowered:
+            return "Outside food policies can vary by branch and booking type, so please confirm that with the branch team before carrying food in."
         if "food" in lowered:
             return self._food_faq_answer(lowered)
         if "dress code" in lowered or "what should i wear" in lowered or re.search(r"\bwear\b", lowered):
@@ -2363,6 +2432,15 @@ class InboundAgent:
                 if capacity:
                     return f"Great. {location} can accommodate approximately {capacity}. What date were you thinking of visiting us for the party?"
             return "Got it. What date are you planning for?"
+        if field == "room":
+            recommended = str(self.memory.data.get("recommended_option") or "").strip()
+            if recommended:
+                return f"Would you like to book {recommended}, or choose another room?"
+            return "Do you already have a room in mind, or would you like a recommendation?"
+        if field in {"preferred_time", "time_preference"}:
+            return "What time works best: morning, afternoon, evening, or a specific time?"
+        if field == "selected_slot":
+            return "Which available slot would you prefer?"
         if field == "company_size":
             return "Roughly how many employees are joining?"
         if field == "customer_name":

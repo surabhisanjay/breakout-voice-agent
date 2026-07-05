@@ -568,18 +568,20 @@ def test_live_availability_preserves_slots_but_marks_group_capacity_unsupported(
     monkeypatch.setenv("BOOKING_API_KEY", "test-key")
     monkeypatch.setenv("BOOKING_BASE_URL", "https://test.api")
     monkeypatch.delenv("BOOKING_PROVIDER", raising=False)
+    future_date = date.today() + timedelta(days=7)
+    future_label = future_date.strftime("%d %B").lstrip("0")
     provider = MagicMock(spec=BreakoutBookingProvider)
     provider.get_booking_venues.return_value = [{"venueId": "venue-1", "name": "Whitefield"}]
     provider.get_booking_games.return_value = [{"gameId": "game-1", "name": "Undercover"}]
     provider.search_booking_slots.return_value = [
-        {"eventId": "event-1", "time": "15:00", "available": 8, "isAvailable": True}
+        {"eventId": "event-1", "date": future_date.isoformat(), "time": "15:00", "available": 8, "isAvailable": True}
     ]
     orchestrator = BookingOrchestrator(
         booking_provider=provider,
         contract_provider=MagicMock(spec=AgentContractProvider),
     )
 
-    result = orchestrator.check_availability("Whitefield", "25 June", 11, "Undercover")
+    result = orchestrator.check_availability("Whitefield", future_label, 11, "Undercover")
 
     assert result["available"] is True
     assert result["slots"] == []

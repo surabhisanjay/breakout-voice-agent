@@ -54,7 +54,7 @@ def test_room_change_is_acknowledged_and_clears_selected_slot(tmp_path: Path) ->
     assert "same date and time" in response
     assert memory.data["room"] == "Hostage"
     assert memory.data["selected_slot"] == ""
-    assert agent._state == agent._STATE_CHECKING_AVAILABILITY
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
 
 def test_date_change_is_acknowledged_and_clears_selected_slot(tmp_path: Path) -> None:
@@ -69,7 +69,7 @@ def test_date_change_is_acknowledged_and_clears_selected_slot(tmp_path: Path) ->
     assert "same room" in response
     assert memory.data["preferred_date"] == "26 June"
     assert memory.data["selected_slot"] == ""
-    assert agent._state == agent._STATE_CHECKING_AVAILABILITY
+    assert agent._state == agent._STATE_WAITING_FOR_SLOT
 
 
 def test_location_specific_parking_answer_for_inbound(tmp_path: Path) -> None:

@@ -28,7 +28,16 @@ from src.agents.booking_agent import BookingAgent
 from src.agents.conversation_intelligence_agent import ConversationIntelligenceAgent
 from src.agents.evaluation_agent import EvaluationAgent
 from src.agents.inbound_agent import InboundAgent
+from src.integrations.closiro import (
+    build_call_ended_payload,
+    build_escalation_context,
+    build_escalation_payload,
+    get_default_closiro_client,
+)
 from src.memory.conversation_memory import ConversationMemory
+from src.services.phase1_state import build_phase1_business_state, mark_customer_reply_after_follow_up
+from src.services.realtime import get_default_realtime_publisher
+from src.services.realtime.publisher import transcript_chunk_from_turn
 from src.services.wati_client import WatiClient
 
 
@@ -286,6 +295,266 @@ def _validate_session_id(session_id: str) -> str:
             detail="session_id may contain only letters, numbers, underscore, dash, dot, and colon.",
         )
     return clean
+
+
+def _conversation_length(runtime: SessionRuntime) -> int:
+    conversation = runtime.inbound.memory.data.get("conversation")
+    return len(conversation) if isinstance(conversation, list) else 0
+
+
+_REALTIME_BOOKING_KEYS = (
+    "booking_id",
+    "booking_ref",
+    "booking_order_id",
+    "order_id",
+    "orderId",
+    "booking_status",
+    "bookingStatus",
+    "payment_url",
+    "paymentUrl",
+    "payment_link",
+    "payment_status",
+    "paymentStatus",
+    "payment_deadline",
+    "paymentDeadline",
+    "selected_slot",
+    "room",
+    "location",
+    "preferred_date",
+    "participants",
+    "price_breakdown",
+)
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _realtime_call_id(session_id: str, runtime: SessionRuntime) -> str:
+    memory = runtime.inbound.memory.data
+    return str(
+        memory.get("call_id")
+        or memory.get("vapi_call_id")
+        or memory.get("vapiCallId")
+        or memory.get("conversation_id")
+        or session_id
+    )
+
+
+def _remember_realtime_publish(memory: dict[str, Any], event: str, result: Any) -> None:
+    history = list(memory.get("_realtime_publish_results") or [])
+    history.append(
+        {
+            "event": event,
+            "channel": getattr(result, "channel", ""),
+            "attempted": bool(getattr(result, "attempted", False)),
+            "sent": bool(getattr(result, "sent", False)),
+            "subscriber_count": int(getattr(result, "subscriber_count", 0) or 0),
+            "retry_count": int(getattr(result, "retry_count", 0) or 0),
+            "latency_ms": float(getattr(result, "latency_ms", 0.0) or 0.0),
+            "reason": str(getattr(result, "reason", "") or ""),
+        }
+    )
+    memory["_realtime_publish_results"] = history[-80:]
+
+
+def _publish_realtime_event(
+    runtime: SessionRuntime,
+    call_id: str,
+    event: str,
+    payload: dict[str, Any],
+    *,
+    once_key: str = "",
+) -> bool:
+    memory = runtime.inbound.memory.data
+    published_once = set(memory.get("_realtime_published_once") or [])
+    if once_key and once_key in published_once:
+        return False
+    business_state = dict(memory.get("phase1_business_state") or build_phase1_business_state(memory))
+    enriched_payload = {**business_state, **payload, "business_state": business_state}
+    try:
+        result = get_default_realtime_publisher().publish(event, call_id, enriched_payload)
+    except Exception as exc:  # pragma: no cover - defensive best-effort guard
+        logger.exception("REALTIME_EVENT_UNHANDLED event=%s call_id=%s error=%s", event, call_id, exc.__class__.__name__)
+        return False
+    _remember_realtime_publish(memory, event, result)
+    if once_key and result.sent:
+        published_once.add(once_key)
+        memory["_realtime_published_once"] = sorted(published_once)
+    return bool(result.sent)
+
+
+def _booking_state_changed(before: dict[str, Any], after: dict[str, Any], response: ChatResponse | None) -> bool:
+    return any(_stable_json(before.get(key)) != _stable_json(after.get(key)) for key in _REALTIME_BOOKING_KEYS)
+
+
+def _booking_event_payload(memory: dict[str, Any], response: ChatResponse | None, result: Any) -> dict[str, Any]:
+    if response is not None:
+        booking = dict(response.booking or {})
+        payment = dict(response.payment or {})
+        price_breakdown = dict(response.price_breakdown or {})
+    else:
+        booking = _extract_booking_payload(result)
+        payment = _extract_payment_payload(result)
+        price_breakdown = _extract_price_breakdown(result)
+    return {
+        "booking": booking,
+        "payment": payment,
+        "price_breakdown": price_breakdown,
+        "state": {key: memory.get(key) for key in _REALTIME_BOOKING_KEYS if memory.get(key) not in (None, "")},
+    }
+
+
+def _timeline_events_for_result(result: Any) -> list[dict[str, Any]]:
+    timeline = getattr(result, "timeline_events", None) or []
+    if not timeline and isinstance(getattr(result, "call_intelligence", None), dict):
+        timeline = result.call_intelligence.get("timeline_events") or []
+    return [dict(item) for item in timeline if isinstance(item, dict)]
+
+
+def _publish_realtime_updates(
+    session_id: str,
+    runtime: SessionRuntime,
+    result: Any,
+    response: ChatResponse | None,
+    start_index: int,
+    memory_before: dict[str, Any],
+    latency_ms: float,
+) -> None:
+    memory = runtime.inbound.memory.data
+    call_id = _realtime_call_id(session_id, runtime)
+    memory["phase1_business_state"] = build_phase1_business_state(memory, result)
+    conversation = memory.get("conversation")
+    turn_count = len(conversation) if isinstance(conversation, list) else 0
+
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "call.started",
+        {"session_id": session_id, "channel": memory.get("channel") or "web_chat"},
+        once_key="call.started",
+    )
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "agent.state",
+        {
+            "session_id": session_id,
+            "active_agent": runtime.active_agent,
+            "next_agent": getattr(result, "next_agent", ""),
+            "intent": getattr(result, "intent", "") or memory.get("intent", ""),
+        },
+    )
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "call.updated",
+        {
+            "session_id": session_id,
+            "turn_count": turn_count,
+            "active_agent": runtime.active_agent,
+            "latency_ms": round(latency_ms, 1),
+        },
+    )
+
+    conversation = runtime.inbound.memory.data.get("conversation")
+    if isinstance(conversation, list):
+        for index, turn in enumerate(conversation[start_index:], start=start_index + 1):
+            if not isinstance(turn, dict):
+                continue
+            chunk = transcript_chunk_from_turn(turn)
+            if chunk is None:
+                continue
+            _publish_realtime_event(
+                runtime,
+                call_id,
+                "transcript.chunk",
+                {
+                    "speaker": chunk.speaker,
+                    "text": chunk.text,
+                    "timestamp": chunk.timestamp,
+                    "event_type": chunk.event_type,
+                    "sequence": index,
+                },
+            )
+
+    sentiment = dict(getattr(result, "sentiment_analysis", {}) or memory.get("sentiment_analysis") or {})
+    if sentiment and _stable_json(memory_before.get("sentiment_analysis") or {}) != _stable_json(sentiment):
+        _publish_realtime_event(runtime, call_id, "sentiment.updated", {"session_id": session_id, "sentiment": sentiment})
+
+    intent_after = str(getattr(result, "intent", "") or memory.get("intent") or "")
+    intent_before = str(memory_before.get("intent") or "")
+    if intent_after and intent_after != intent_before:
+        _publish_realtime_event(runtime, call_id, "intent.updated", {"session_id": session_id, "intent": intent_after})
+
+    seen_timeline = set(memory.get("_realtime_timeline_event_keys") or [])
+    for item in _timeline_events_for_result(result):
+        key = _stable_json(item)
+        if key in seen_timeline:
+            continue
+        sent = _publish_realtime_event(runtime, call_id, "timeline.event", {"session_id": session_id, "timeline_event": item})
+        if sent:
+            seen_timeline.add(key)
+    if seen_timeline:
+        memory["_realtime_timeline_event_keys"] = sorted(seen_timeline)[-200:]
+
+    if _booking_state_changed(memory_before, memory, response):
+        booking_payload = _booking_event_payload(memory, response, result)
+        booking_id = str(memory.get("booking_id") or booking_payload["booking"].get("booking_id") or "")
+        if booking_id and not memory_before.get("booking_id"):
+            _publish_realtime_event(
+                runtime,
+                call_id,
+                "booking.created",
+                booking_payload,
+                once_key=f"booking.created:{booking_id}",
+            )
+        _publish_realtime_event(runtime, call_id, "booking.updated", booking_payload)
+
+    escalation = dict(getattr(result, "escalation", {}) or memory.get("escalation_state") or {})
+    escalation_active = bool(escalation.get("escalate") or escalation.get("required") or getattr(result, "next_agent", "") == "escalation_agent")
+    if escalation_active:
+        integration_payload = _integration_payload(session_id, memory, result, response)
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "escalation.created",
+            {
+                "session_id": session_id,
+                "escalation": escalation,
+                "handoff_summary": getattr(result, "handoff_summary", None) or {},
+                "escalation_payload": build_escalation_context(session_id, integration_payload),
+            },
+            once_key="escalation.created",
+        )
+
+    if response is not None and response.booking.get("booking_id"):
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "summary.ready",
+            {
+                "session_id": session_id,
+                "conversation_summary": response.conversation_summary,
+                "handoff_summary": response.handoff_summary,
+                "evaluation": response.evaluation,
+                "metrics": response.metrics,
+                "csat": response.csat,
+            },
+            once_key="summary.ready",
+        )
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "call.ended",
+            {
+                "session_id": session_id,
+                "outcome": response.conversation_summary.get("outcome") or "booking_reserved",
+                "booking": response.booking,
+                "payment": response.payment,
+            },
+            once_key="call.ended",
+        )
 
 
 def _session_memory_path(session_id: str) -> Path:
@@ -782,6 +1051,96 @@ def _persist_chat_result(session_id: str, runtime: SessionRuntime, result: Any, 
         )
 
 
+def _integration_payload(
+    session_id: str,
+    memory: dict[str, Any],
+    result: Any,
+    response: ChatResponse | None,
+) -> dict[str, Any]:
+    if response is not None:
+        payload = response.model_dump()
+    else:
+        payload = {
+            "booking": _extract_booking_payload(result),
+            "payment": _extract_payment_payload(result),
+            "conversation_summary": dict(memory.get("conversation_summary") or {}),
+            "handoff_summary": getattr(result, "handoff_summary", None),
+            "escalation": dict(getattr(result, "escalation", {}) or memory.get("escalation_state") or {}),
+            "customer_profile": dict(getattr(result, "customer_profile", {}) or {}),
+            "conversation_history": list(getattr(result, "transcript", []) or memory.get("conversation") or []),
+            "transcript": list(getattr(result, "transcript", []) or []),
+            "recording": dict(getattr(result, "recording", {}) or {}),
+        }
+    recommendation = getattr(result, "recommendation", None)
+    if isinstance(recommendation, dict) and recommendation:
+        payload["recommendation"] = recommendation
+    elif response is not None and response.booking.get("room"):
+        payload["recommendation"] = {"option": response.booking.get("room")}
+    else:
+        payload["recommendation"] = {}
+    business_state = dict(memory.get("phase1_business_state") or build_phase1_business_state(memory, result))
+    payload.update(
+        {
+            "business_state": business_state,
+            "customer_intent": business_state["customer_intent"],
+            "confidence_score": business_state["confidence_score"],
+            "preferred_contact_method": str(
+                memory.get("preferred_contact_method")
+                or memory.get("channel")
+                or ("whatsapp" if session_id.startswith("whatsapp:") else "web_chat")
+            ),
+            "channel": str(memory.get("channel") or ("whatsapp" if session_id.startswith("whatsapp:") else "web_chat")),
+            "customer_details": {
+                "name": str(memory.get("customer_name") or ""),
+                "first_name": str(memory.get("first_name") or ""),
+                "last_name": str(memory.get("last_name") or ""),
+                "phone": str(memory.get("phone") or ""),
+                "email": str(memory.get("email") or ""),
+                "whatsapp_number": str(memory.get("whatsapp_number") or ""),
+            },
+            "timestamp": business_state["timestamp"],
+        }
+    )
+    return payload
+
+
+def _sync_closiro_outbound(session_id: str, runtime: SessionRuntime, result: Any, response: ChatResponse) -> None:
+    memory = runtime.inbound.memory.data
+    synced = set(memory.get("_closiro_synced_events") or [])
+    payload = _integration_payload(session_id, memory, result, response)
+    client = get_default_closiro_client()
+
+    candidates = []
+    if getattr(result, "next_agent", "") == "escalation_agent":
+        candidates.append(build_escalation_payload(session_id, payload))
+    if response.booking.get("booking_id"):
+        candidates.append(build_call_ended_payload(session_id, payload))
+
+    for event in candidates:
+        if event.sync_key in synced:
+            continue
+        try:
+            sync_result = client.send(event)
+        except Exception as exc:  # pragma: no cover - defensive best-effort guard
+            logger.exception("CLOSIRO_WEBHOOK_UNHANDLED event=%s endpoint=%s error=%s", event.event_type, event.endpoint, exc.__class__.__name__)
+            continue
+        memory.setdefault("_closiro_sync_results", []).append(
+            {
+                "event_type": sync_result.event_type,
+                "endpoint": sync_result.endpoint,
+                "attempted": sync_result.attempted,
+                "sent": sync_result.sent,
+                "status_code": sync_result.status_code,
+                "reason": sync_result.reason,
+                "retry_count": sync_result.retry_count,
+                "latency_ms": sync_result.latency_ms,
+            }
+        )
+        if sync_result.sent:
+            synced.add(event.sync_key)
+            memory["_closiro_synced_events"] = sorted(synced)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(
@@ -818,6 +1177,8 @@ def chat(request: ChatRequest) -> ChatResponse:
     _mem_before = dict(runtime.inbound.memory.data)   # snapshot BEFORE dispatch
     _t0 = time.perf_counter()
     with _lock:
+        mark_customer_reply_after_follow_up(runtime.inbound.memory.data)
+        _transcript_start = _conversation_length(runtime)
         result, booking, active_agent = dispatch(
             message,
             runtime.inbound,
@@ -855,7 +1216,10 @@ def chat(request: ChatRequest) -> ChatResponse:
         recording=result.recording,
         **reporting,
     )
+    _publish_realtime_updates(request.session_id, runtime, result, response, _transcript_start, _mem_before, _latency_ms)
     _persist_chat_result(request.session_id, runtime, result, channel="web_chat")
+    _sync_closiro_outbound(request.session_id, runtime, result, response)
+    runtime.inbound.memory.save()
     logger.info("CHAT_RESPONSE=%s", _json_log_value(response.model_dump()))
     return response
 
@@ -878,9 +1242,13 @@ async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
     session_id = _whatsapp_session_id(phone)
     runtime = _get_runtime(session_id)
     with _lock:
+        _mem_before = dict(runtime.inbound.memory.data)
+        _t0 = time.perf_counter()
         runtime.inbound.memory.data["channel"] = "whatsapp"
         runtime.inbound.memory.data["whatsapp_number"] = "".join(ch for ch in str(phone) if ch.isdigit())
+        mark_customer_reply_after_follow_up(runtime.inbound.memory.data)
         runtime.inbound.memory.save()
+        _transcript_start = _conversation_length(runtime)
         result, booking, active_agent = dispatch(
             message,
             runtime.inbound,
@@ -896,7 +1264,9 @@ async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
             "received_at": _now_iso(),
         }
         runtime.inbound.memory.save()
+    _latency_ms = (time.perf_counter() - _t0) * 1000
 
+    _publish_realtime_updates(session_id, runtime, result, None, _transcript_start, _mem_before, _latency_ms)
     wati_result = WatiClient().send_session_message(
         phone,
         result.response,

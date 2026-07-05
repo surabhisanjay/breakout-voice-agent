@@ -453,18 +453,22 @@ class BookingAgent:
             booking_result = None
 
         elif explicit_room_change:
-            self.memory.set_field("room", target_room, message, expected_field="room")
-            self._clear_selected_slot()
-            self._state = self._STATE_CHECKING_AVAILABILITY
-            response = self._room_change_acknowledgement(target_room)
-            booking_result = None
+            response, booking_result = self._apply_booking_change_and_refresh(
+                message,
+                room=target_room,
+                location=target_location if location_changed else None,
+                preferred_date=target_date if date_changed else None,
+                participants=target_participants if participants_changed else None,
+            )
 
         elif explicit_date_change:
-            self.memory.set_field("preferred_date", target_date, message, expected_field="preferred_date")
-            self._clear_selected_slot()
-            self._state = self._STATE_CHECKING_AVAILABILITY
-            response = self._date_change_acknowledgement(target_date)
-            booking_result = None
+            response, booking_result = self._apply_booking_change_and_refresh(
+                message,
+                room=target_room if room_changed else None,
+                location=target_location if location_changed else None,
+                preferred_date=target_date,
+                participants=target_participants if participants_changed else None,
+            )
 
         elif is_slot_availability_question:
             response = self._direct_slot_availability_response(slot_input)
@@ -528,69 +532,13 @@ class BookingAgent:
             booking_result = None
 
         elif is_change_request:
-            changes_desc = []
-
-            if room_changed or location_changed or date_changed:
-                self._clear_selected_slot()
-            
-            if room_changed:
-                self.memory.set_field("room", target_room, message, expected_field="room")
-                changes_desc.append(f"room to {target_room}")
-                
-            if location_changed:
-                self.memory.set_field("location", target_location, message, expected_field="location")
-                changes_desc.append(f"location to {target_location}")
-                
-            if participants_changed:
-                changes_desc.append(f"player count to {target_participants}")
-                
-            if date_changed:
-                self.memory.set_field("preferred_date", target_date, message, expected_field="preferred_date")
-                changes_desc.append(f"date to {target_date}")
-                
-            # Acknowledge the change
-            ack = f"Sure, I've updated your " + ", ".join(changes_desc) + ". "
-            
-            # If room changed, maybe add explanation
-            if room_changed:
-                from ..knowledge.demo_knowledge import get_demo_answer
-                explanation = get_demo_answer(target_room)
-                if explanation:
-                    ack += explanation + " "
-
-            location = str(self.memory.data.get("location", ""))
-            date = str(self.memory.data.get("preferred_date", ""))
-            participants = int(self.memory.data.get("participants") or self.memory.data.get("company_size") or 2)
-
-            if not date:
-                self._state = self._STATE_CHECKING_AVAILABILITY
-                response = f"{ack}What date would you like to visit?"
-                booking_result = None
-                availability = None
-            elif not self._has_time_preference():
-                self._state = self._STATE_WAITING_FOR_TIME_PREFERENCE
-                response = f"{ack}{self._time_preference_question()}"
-                booking_result = None
-                availability = None
-            else:
-                availability = self.availability_tool.check(location, date, participants)
-                self._last_availability = availability
-
-            if availability is not None and availability.get("available") and availability.get("capacity_supported") is False:
-                self._available_slots = []
-                response = f"{ack}{self._start_coordination(availability, participants)}"
-            elif availability is not None and availability["available"]:
-                self._available_slots = self._visible_slots(availability)
-                self._state = self._STATE_WAITING_FOR_SLOT
-                if self._available_slots:
-                    response = f"{ack}{self._availability_slots_response(date, location, participants)}"
-                else:
-                    response = f"{ack}I found availability on {date} at {location}, but no verified {self.memory.data.get('preferred_period')} slots for {participants} players. Could you share another time window?"
-            elif availability is not None:
-                self._state = self._STATE_WAITING_FOR_ALT_DATE
-                response = f"{ack}I checked availability on {date} at {location} for {participants} players, but unfortunately we don't have slots. Could you share an alternative date?"
-
-            booking_result = None
+            response, booking_result = self._apply_booking_change_and_refresh(
+                message,
+                room=target_room if room_changed else None,
+                location=target_location if location_changed else None,
+                preferred_date=target_date if date_changed else None,
+                participants=target_participants if participants_changed else None,
+            )
         else:
             age_input = self.memory._extract_age_group(lowered, allow_bare_range=True)[0]
             is_slot_confirmation_response = (
@@ -841,6 +789,105 @@ class BookingAgent:
     # ------------------------------------------------------------------ #
     # State handlers                                                       #
     # ------------------------------------------------------------------ #
+
+    def _apply_booking_change_and_refresh(
+        self,
+        message: str,
+        *,
+        room: str | None = None,
+        location: str | None = None,
+        preferred_date: str | None = None,
+        participants: int | str | None = None,
+    ) -> tuple[str, dict | None]:
+        changes_desc: list[str] = []
+        if any(value not in (None, "") for value in (room, location, preferred_date, participants)):
+            self._clear_selected_slot()
+
+        if room:
+            self.memory.set_field("room", room, message, expected_field="room")
+            changes_desc.append(f"room to {room}")
+        if location:
+            self.memory.set_field("location", location, message, expected_field="location")
+            changes_desc.append(f"location to {location}")
+        if participants not in (None, ""):
+            self.memory.set_field("participants", participants, message, expected_field="participants")
+            changes_desc.append(f"player count to {participants}")
+        if preferred_date:
+            self.memory.set_field("preferred_date", preferred_date, message, expected_field="preferred_date")
+            changes_desc.append(f"date to {preferred_date}")
+
+        if room and not any(value not in (None, "") for value in (location, preferred_date, participants)):
+            ack = f"Got it. I've switched the room to {room}. "
+            current_date = str(self.memory.data.get("preferred_date") or "").strip()
+            current_time = str(
+                self.memory.data.get("preferred_time")
+                or self.memory.data.get("selected_slot")
+                or ""
+            ).strip()
+            if current_date and current_time:
+                ack += "I'll keep the same date and time while I recheck availability. "
+            elif current_date:
+                ack += f"I'll keep {current_date} while I recheck availability. "
+        elif preferred_date and not any(value not in (None, "") for value in (room, location, participants)):
+            same_room = str(self.memory.data.get("room") or "").strip()
+            if same_room:
+                ack = f"No problem. I'll keep the same room and check {preferred_date} instead. "
+            else:
+                ack = f"No problem. I'll check {preferred_date} instead. "
+        else:
+            ack = (
+                "Sure, I've updated your " + ", ".join(changes_desc) + ". "
+                if changes_desc
+                else "Sure, I've updated that. "
+            )
+
+        if room and not self.memory.data.get("booking_started"):
+            from ..knowledge.demo_knowledge import get_demo_answer
+
+            explanation = get_demo_answer(room)
+            if explanation:
+                ack += explanation + " "
+
+        location_value = str(self.memory.data.get("location") or "")
+        date_value = str(self.memory.data.get("preferred_date") or "")
+        participants_value = int(
+            self.memory.data.get("participants")
+            or self.memory.data.get("company_size")
+            or 2
+        )
+
+        if not location_value:
+            self._state = self._STATE_CHECKING_AVAILABILITY
+            return f"{ack}Which Breakout location are you planning to visit?", None
+        if not date_value:
+            self._state = self._STATE_CHECKING_AVAILABILITY
+            return f"{ack}What date would you like to visit?", None
+        if not self._has_time_preference():
+            self._state = self._STATE_WAITING_FOR_TIME_PREFERENCE
+            return f"{ack}{self._time_preference_question()}", None
+
+        availability = self.availability_tool.check(location_value, date_value, participants_value)
+        self._last_availability = availability
+
+        if availability.get("available") and availability.get("capacity_supported") is False:
+            self._available_slots = []
+            return f"{ack}{self._start_coordination(availability, participants_value)}", None
+        if availability.get("available"):
+            self._available_slots = self._visible_slots(availability)
+            self._state = self._STATE_WAITING_FOR_SLOT
+            if self._available_slots:
+                return f"{ack}{self._availability_slots_response(date_value, location_value, participants_value)}", None
+            period = str(self.memory.data.get("preferred_period") or "requested").strip()
+            return (
+                f"{ack}I found availability on {date_value} at {location_value}, but no verified {period} "
+                f"slots for {participants_value} players. Could you share another time window?"
+            ), None
+
+        self._state = self._STATE_WAITING_FOR_ALT_DATE
+        return (
+            f"{ack}I checked availability on {date_value} at {location_value} for {participants_value} players, "
+            "but unfortunately we don't have slots. Could you share an alternative date?"
+        ), None
 
     def _handle_availability_check(self) -> tuple[str, dict | None]:
         """
