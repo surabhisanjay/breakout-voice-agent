@@ -25,6 +25,46 @@ function loadState() {
   }
 }
 
+let sse = null;
+let activeStreamBubble = null;
+
+function connectRealtime() {
+  if (sse) sse.close();
+  sse = new EventSource(`/stream/${state.sessionId}`);
+  
+  sse.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.event === "transcript.chunk") {
+        handleTranscriptChunk(data.payload);
+      }
+    } catch (err) {
+      console.error("SSE parse error", err);
+    }
+  };
+  sse.onerror = () => {
+    console.warn("SSE connection error, reconnecting...");
+  };
+}
+
+function handleTranscriptChunk(chunk) {
+  if (chunk.speaker !== "assistant") return;
+  
+  if (!activeStreamBubble) {
+    const row = document.createElement("article");
+    row.className = `message-row agent streaming`;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    row.appendChild(bubble);
+    els.messages.appendChild(row);
+    activeStreamBubble = bubble;
+    els.typing.hidden = true;
+  }
+  
+  activeStreamBubble.innerHTML = linkify(chunk.text);
+  scrollToBottom();
+}
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
@@ -194,6 +234,12 @@ async function sendMessage(text, retryOf = null) {
   try {
     const payload = await postChat(text);
     state.lastPayload = payload;
+    
+    if (activeStreamBubble) {
+      activeStreamBubble.closest('.message-row').remove();
+      activeStreamBubble = null;
+    }
+
     appendMessage({
       role: "agent",
       text: payload.response || "",
@@ -274,7 +320,11 @@ els.reset.addEventListener("click", async () => {
     state.sessionId = crypto.randomUUID();
     state.messages = [];
     state.lastPayload = null;
+    if (activeStreamBubble) {
+      activeStreamBubble = null;
+    }
     saveState();
+    connectRealtime();
     setBusy(false);
     setStatus("Connected");
     render();
@@ -298,4 +348,5 @@ function welcome() {
 }
 
 render();
+connectRealtime();
 welcome();
