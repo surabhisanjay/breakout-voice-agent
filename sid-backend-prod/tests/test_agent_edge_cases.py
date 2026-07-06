@@ -105,3 +105,14 @@ def test_policy_dispute_escalation(tmp_path: Path) -> None:
     res = agent.evaluate("This cancellation policy is completely unfair, I refuse to pay this charge", sentiment)
     assert res.escalate is True
     assert "disputed" in res.reason.lower() or "policy" in res.reason.lower()
+
+
+def test_noise_handling_in_chat_endpoint() -> None:
+    from fastapi.testclient import TestClient
+    from app import app
+    client = TestClient(app)
+
+    # Send noise message
+    res2 = client.post("/chat", json={"session_id": "test_noise_sigh", "message": "[sigh]"})
+    assert res2.status_code == 200
+    assert "didn't quite catch that" in res2.json()["response"]

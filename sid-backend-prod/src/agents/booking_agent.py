@@ -764,6 +764,7 @@ class BookingAgent:
             state=self.memory.data,
             intent=str(self.memory.data.get("intent", "")),
             mode=ConversationMode.BOOKING if mode != ConversationMode.RESCUE else mode,
+            session_id=getattr(self, "session_id", ""),
         )
         composer_latency = time.time() - composer_start
 

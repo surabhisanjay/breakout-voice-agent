@@ -5,6 +5,7 @@ import os
 import re
 import time
 from pathlib import Path
+import redis
 
 from .core.conversation_modes import ConversationMode
 
@@ -49,6 +50,7 @@ class ResponseComposer:
         intent: str,
         mode: ConversationMode,
         grounded_context: str = "",
+        session_id: str = "",
     ) -> str:
         self.last_latency = 0.0
         api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -66,6 +68,17 @@ class ResponseComposer:
             return self._booking_progress_response(state)
 
         if not draft.strip() or not enabled:
+            return draft
+
+        # Fast path bypass for simple greetings/short answers to reduce latency on voice calls
+        lowered_draft = draft.strip().lower()
+        if len(draft.split()) <= 3 or any(
+            phrase in lowered_draft
+            for phrase in (
+                "yes, this is breakout", "hi, this is breakout", "how may i help you",
+                "what name should the events team use", "what phone number should the events team use"
+            )
+        ):
             return draft
 
         safe_state = {
@@ -152,8 +165,37 @@ class ResponseComposer:
                         {"role": "user", "content": user_prompt},
                     ],
                     max_tokens=100,
+                    stream=True,
                 )
-                composed = (response.choices[0].message.content or "").strip()
+                
+                redis_client = None
+                if session_id:
+                    try:
+                        redis_url = os.environ.get("REDIS_URL") or os.environ.get("REALTIME_REDIS_URL") or "redis://localhost:6379"
+                        redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+                    except Exception:
+                        pass
+                
+                composed = ""
+                for chunk in response:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        composed += content
+                        if redis_client:
+                            try:
+                                payload = {
+                                    "event": "transcript.chunk",
+                                    "payload": {
+                                        "text": composed,
+                                        "event_type": "interim",
+                                        "speaker": "assistant"
+                                    }
+                                }
+                                redis_client.publish(f"live_call:{session_id}", json.dumps(payload))
+                            except Exception:
+                                pass
+                
+                composed = composed.strip()
             elif hasattr(client, "responses"):
                 response = client.responses.create(
                     model=self.model,

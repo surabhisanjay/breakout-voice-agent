@@ -323,6 +323,7 @@ def dispatch(
     inbound: InboundAgent,
     booking: BookingAgent | None,
     active_agent: str,
+    session_id: str = "",
 ) -> tuple[AgentResponse, BookingAgent | None, str]:
     """
     Route a message to the correct agent and return:
@@ -334,6 +335,11 @@ def dispatch(
     try:
         import os
         message = inbound.memory.normalize_entity_aliases(message)
+        
+        inbound.session_id = session_id
+        if booking:
+            booking.session_id = session_id
+            
         if _is_payment_link_recovery_turn(message) and (
             inbound.memory.data.get("booking_id")
             or inbound.memory.data.get("payment_link")

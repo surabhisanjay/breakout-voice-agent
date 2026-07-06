@@ -1084,6 +1084,7 @@ class InboundAgent:
             intent=intent,
             mode=mode,
             grounded_context=grounded_context,
+            session_id=getattr(self, "session_id", ""),
         )
 
 

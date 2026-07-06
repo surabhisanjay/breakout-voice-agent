@@ -18,8 +18,10 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+import asyncio
+import redis.asyncio as aioredis
 from pydantic import BaseModel, Field
 
 from main import BASE_DIR, build_inbound_agent, dispatch
@@ -801,6 +803,32 @@ def web_chat() -> FileResponse:
     return FileResponse(WEB_CHAT_DIR / "index.html")
 
 
+async def sse_generator(session_id: str):
+    redis_url = os.environ.get("REDIS_URL") or os.environ.get("REALTIME_REDIS_URL") or "redis://localhost:6379"
+    try:
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
+        pubsub = redis_client.pubsub()
+        channel = f"live_call:{session_id}"
+        await pubsub.subscribe(channel)
+        
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message:
+                data = message["data"]
+                yield f"data: {data}\n\n"
+            await asyncio.sleep(0.1)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe(channel)
+        await redis_client.aclose()
+
+
+@app.get("/stream/{session_id}")
+async def stream(session_id: str):
+    return StreamingResponse(sse_generator(session_id), media_type="text/event-stream")
+
+
 @app.post("/debug")
 async def debug(payload: Any = Body(...)) -> dict[str, Any]:
     logger.info("DEBUG_REQUEST=%s", _json_log_value(payload))
@@ -811,8 +839,15 @@ async def debug(payload: Any = Body(...)) -> dict[str, Any]:
 def chat(request: ChatRequest) -> ChatResponse:
     logger.info("PARSED_REQUEST=%s", _json_log_value(request.model_dump()))
     message = request.message.strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message cannot be empty.")
+    clean_msg = re.sub(r"\[.*?\]", "", message).strip(" .!?")
+    if not message or not clean_msg:
+        logger.info("Empty or noise-only message received; returning silence recovery prompt.")
+        response = ChatResponse(
+            response="I'm sorry, I didn't quite catch that. Could you repeat?",
+            next_agent="inbound_agent",
+        )
+        logger.info("CHAT_RESPONSE=%s", _json_log_value(response.model_dump()))
+        return response
 
     runtime = _get_runtime(request.session_id)
     _mem_before = dict(runtime.inbound.memory.data)   # snapshot BEFORE dispatch
@@ -823,6 +858,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             runtime.inbound,
             runtime.booking,
             runtime.active_agent,
+            request.session_id,
         )
         runtime.booking = booking
         runtime.active_agent = active_agent
@@ -886,6 +922,7 @@ async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
             runtime.inbound,
             runtime.booking,
             runtime.active_agent,
+            session_id,
         )
         runtime.booking = booking
         runtime.active_agent = active_agent
