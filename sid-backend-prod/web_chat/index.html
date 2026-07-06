@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Breakout Booking Chat</title>
+    <link rel="stylesheet" href="/web-chat/assets/styles.css" />
+  </head>
+  <body>
+    <main class="shell" aria-label="Breakout web chat">
+      <section class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <p class="eyebrow">Breakout Escape Rooms</p>
+            <h1>Booking Assistant</h1>
+          </div>
+          <div class="status" id="connectionStatus" aria-live="polite">
+            <span class="dot"></span>
+            <span>Connected</span>
+          </div>
+        </header>
+
+        <section class="summary-strip" id="summaryStrip" hidden></section>
+
+        <section class="messages" id="messages" aria-live="polite" aria-label="Conversation"></section>
+
+        <div class="typing" id="typingIndicator" hidden>
+          <span></span><span></span><span></span>
+        </div>
+
+        <form class="composer" id="chatForm">
+          <button class="icon-button" type="button" id="resetButton" title="Start a new chat" aria-label="Start a new chat">
+            ↺
+          </button>
+          <label class="sr-only" for="messageInput">Message</label>
+          <textarea id="messageInput" rows="1" placeholder="Ask about rooms, slots, pricing, parking, or bookings..." autocomplete="off"></textarea>
+          <button class="send-button" id="sendButton" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/web-chat/assets/app.js" defer></script>
+  </body>
+</html>

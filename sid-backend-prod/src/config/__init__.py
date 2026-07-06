@@ -1,0 +1,16 @@
+from .settings import (
+    OPENAI_API_KEY,
+    DEEPGRAM_API_KEY,
+    VAPI_API_KEY,
+    BOOKING_API_KEY,
+    BOOKING_BASE_URL,
+    DEMO_MODE,
+    BREAKOUT_DEBUG,
+    OPENAI_MODEL,
+)
+from .constants import (
+    DEFAULT_BOOKING_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    EXIT_COMMANDS,
+    POST_TTS_COOLDOWN_SECONDS,
+)

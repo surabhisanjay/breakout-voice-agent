@@ -1,0 +1,60 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime artefacts — should never be committed
+logs/
+/memory/
+memory/api_sessions/
+*.log
+*.log.*
+
+# Local-only validation and replay artifacts
+.local_artifacts/
+scratch/**/*.json
+scratch/**/api_sessions/
+scratch/**/run_*/
+scratch/**/surgical_*/
+scratch/**/qa_*/
+scratch/**/probe_*.json
+scratch/**/log_*.json
+scratch/**/direct_live_*.json
+scratch/**/direct_session_*.json
+scratch/**/validation_report*.json
+scratch/**/final_*_report.json
+scratch/**/orphan*_cleanup.json
+
+# Audio scratch files
+*.wav
+*.mp3
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,188 @@
+{
+  "docx_source": "/Users/siddkh10/Downloads/Breakout FAQs.docx",
+  "xlsx_source": "/Users/siddkh10/Downloads/Escape rooms, Parties and Corporates detail.xlsx",
+  "pdf_source": "/Users/siddkh10/Downloads/Breakout Details - Sheet1.pdf",
+  "xlsx_sheets": {
+    "Escape room": [
+      [
+        "Game name",
+        "Location",
+        "Short Description",
+        "Max Capacity",
+        "Minimum Player requires(Taken from website content file)",
+        "Price_Week day",
+        "Price_Weekends",
+        "Age"
+      ],
+      [
+        "Murder Mystery",
+        "Koramangala+Whitefield+JP nagar",
+        "As top detectives in town, can you crack the mysterious locked door case of Shoaib Sheikh in Alexandria, Egypt? \n \n Or will the killer evade justice?",
+        "7 players",
+        "2 Players",
+        "2-3 players: From Rs. 800 \n4-6 players: From Rs. 700",
+        "2-3 players: From Rs. 900 \n4-6 players: From Rs. 800",
+        "9+"
+      ],
+      [
+        "Hostage",
+        "Koramangala+Whitefield+JP nagar",
+        "Zainab, a 6-year-old diamond merchant\u2019s daughter, has been kidnapped. Can your elite team of super cops rescue her before a deadly bomb goes off?\n \n Tick\u2026Tock",
+        "7 players",
+        "2 Players",
+        "2-3 players: From Rs. 800 \n4-6 players: From Rs. 700",
+        "2-3 players: From Rs. 900 \n4-6 players: From Rs. 800",
+        "9+"
+      ],
+      [
+        "Curse of the Pharaoh",
+        "Koramangala",
+        "As renowned archaeologists, you uncover artifacts deep within the ancient Pyramids, revealing a 6,000-year-old curse placed on Pharaoh Zurin by his brother, Nefreko. \n \n Can you break it before time runs out?",
+        "8 players",
+        "4 Players",
+        "4-5 players: From Rs. 900 \n6-7 players: From Rs. 800",
+        "4-5 players: From Rs. 1000 \n6-7 players: From Rs. 900",
+        "18+"
+      ],
+      [
+        "Classified",
+        "Koramangala",
+        "As an elite CIA Delta Force operative, you are on a high-stakes mission to rescue Agent Emily and unravel the chilling mystery behind vanishing psychopaths.\n \n Will you survive this case?",
+        "7 players",
+        "3 Players",
+        "2-3 players: From Rs. 800 \n4-6 players: From Rs. 700",
+        "2-3 players: From Rs. 900 \n4-6 players: From Rs. 800",
+        "11+"
+      ],
+      [
+        "Bomb Defusal",
+        "Whitefield",
+        "Lothal is in chaos! A time bomb ticks away at a tea stall in the Old City. Can you defuse it before over 10,000 lives are lost? \n \n Time is running out! Hurry.",
+        "8 players",
+        "4 Players",
+        "2-3 players: From Rs. 800 \n4-6 players: From Rs. 700",
+        "2-3 players: From Rs. 900 \n4-6 players: From Rs. 800",
+        "15+"
+      ],
+      [
+        "Undercover",
+        "Koramangala+Whitefield",
+        "As investigative journalists, you're trapped in a secret army bunker while investigating 4 police deaths in Barmer.\n  \n Can you unravel the mystery before Oxygen runs out?",
+        "8 players",
+        "4 Players",
+        "2-3 players: From Rs. 800 \n4-6 players: From Rs. 700",
+        "2-3 players: From Rs. 900 \n4-6 players: From Rs. 800",
+        "15+"
+      ],
+      [
+        "Prison Break",
+        "JP nagar",
+        "Blindfolded in a cell, you have 50 minutes to stop a missile launch and prevent global catastrophe during the Cold War. \n \n Can you, as CIA, succeed this mission?",
+        "8 players",
+        "4 Players",
+        "3-5 players: From Rs. 900 \n6-8 players: From Rs. 800",
+        "3-5 players: From Rs. 1000 \n6-8 players: From Rs. 900",
+        "15+"
+      ],
+      [
+        "The Wizarding Championship",
+        "Koramangala",
+        "You and your friends are young wizards in a magical tournament! \n \n Grab your wands, race through the forest, & claim the medal!",
+        "8 players",
+        "4 Players",
+        "4-5 players: From Rs. 900 \n6-7 players: From Rs. 800",
+        "4-5 players: From Rs. 1000 \n6-7 players: From Rs. 900",
+        "5 to 8"
+      ],
+      [
+        "The Forbidden Forest",
+        "Koramangala",
+        "The darkness is on the rise! \n As the greatest magicians, you must stop it before the full moon. \n \n Can you stop another rising of \"You-Know-Who\"?",
+        "8 players",
+        "4 Players",
+        "4-5 players: From Rs. 900 \n6-7 players: From Rs. 800",
+        "4-5 players: From Rs. 1000 \n6-7 players: From Rs. 900",
+        "9 to 13"
+      ]
+    ],
+    "Services ": [
+      [
+        "Services/Name of the Event",
+        "Short description",
+        "What makes Breakout unique",
+        "Capacity_How many people can accomodate",
+        "Price range",
+        "List of activities",
+        "What options we will have realted food?"
+      ],
+      [
+        "Escape room",
+        "Immersive, story-driven escape room experiences where teams solve puzzles to escape within a set time.",
+        "Breakout offers high-quality themed rooms with cinematic storytelling and smart puzzles designed for all skill levels.",
+        "8 players",
+        "700-1000/-",
+        "1. Murder Mystery\nStep into the shoes of lead detectives and piece together clues to solve a riveting locked-room crime before time runs out.\n\n 2. Classified\nJoin an elite team of agents to uncover hidden truths and crack a high-stakes CIA mystery in an abandoned asylum.\n\n 3. Undercover\nAssume the role of investigative journalists trapped in a war bunker, where only teamwork and instinct can lead you out alive. \n\n 4. Curse of the Pharaoh\nExplore an ancient tomb as archaeologists and beat the curse of the Pharaoh to uncover secrets lost to time. \n\n 5. Hostage\nRace against the clock to rescue a kidnapped child and escape a hidden stronghold before disaster strikes.\n\n 6. Bomb Defusal\nWork with your team to locate and deactivate a ticking bomb in a panic-ridden city before it\u2019s too late.\n\n 7. The Missile Attack\nLocked in a Cold War scenario, uncover secrets and stop a missile launch by outsmarting ruthless mercenaries.\n\n 8. The Wizarding Championship\nCompete as young wizards in a magical tournament where only skill and cunning earn the ultimate title.\n\n 9. The Forbidden Forest\nVenture into a mystical forest where hidden forces awaken and only your bravery can protect the realm.",
+        "_"
+      ],
+      [
+        "Birthdays Parties",
+        "Fun and interactive birthday celebrations with thrilling escape room challenges for all ages.",
+        "Breakout customizes birthday experiences with private rooms, age-appropriate puzzles, and memorable group fun.",
+        "KM: 50-80Pax Max\nJP : 35-40Pax Max\nWF : 35-40Pax Max",
+        "RS~ 20000/-\nHF~ 40000/-\nCX~60000/- and above",
+        "Escaperoom:\nTeam up, crack clues, and conquer the clock to break free from the mystery room.\n\nShowstopper:\nA spectacular highlight moment or performance that steals the spotlight and wows the crowd.\n\nkaraoke:\nGrab the mic and sing your heart out for unforgettable fun and team-spirit moments.\n\nScavenger Hunt:\nSprint, search, and solve in a frantic race for the treasure.",
+        "Continental Food and Build Your Menu (VEG),                                                                                                                                                                                    Our Continental box menu \n\n\u2714 Nachos & Cheese\n\u2714 Standard Burger\n\u2714 Pasta Cups\n\u2714 Garlic Bread\n\u2714 Mini Pizza",
+        "Food Option - (Veg and Non-Veg) \n\n Option - Mix Snack Box \n* Min Pax size - 10\n* Served in compartmental boxes\n* Items as follows \ud83d\udc47\ud83c\udffc\n\n\u2714\ufe0f Veg/Non-Veg Patty Burger\n\u2714\ufe0f Small portion of Fries\n\u2714\ufe0fGarlic Bread \n\u2714\ufe0fSmall portion of White Pasta \n\u2714\ufe0f Brownie \n\u2714\ufe0fJuice"
+      ],
+      [
+        "Bachelor Parties",
+        "High-energy escape room adventures are perfect for celebrating bachelor parties with friends.",
+        "Breakout delivers exciting, competitive challenges that turn bachelor parties into unforgettable bonding experiences.",
+        "KM: 50-80Pax Max\nJP : 35-40Pax Max\nWF : 35-40Pax Max",
+        "RS~ 20000/-\nHF~ 40000/-\nCX~60000/- and above",
+        "Escaperoom:\nTeam up, crack clues, and conquer the clock to break free from the mystery room.\n\nShowstopper:\nA spectacular highlight moment or performance that steals the spotlight and wows the crowd.\n\nkaraoke:\nGrab the mic and sing your heart out for unforgettable fun and team-spirit moments.\n\nScavenger Hunt:\nSprint, search, and solve in a frantic race for the treasure.",
+        "Continental Food and Build Your Menu,                                                                    \n\u2714 Nachos & Cheese\n\u2714 Standard Burger\n\u2714 Pasta Cups\n\u2714 Garlic Bread\n\u2714 Mini Pizza",
+        "Food Option - (Veg and Non-Veg) \n\n Option - Mix Snack Box \n* Min Pax size - 10\n* Served in compartmental boxes\n* Items as follows \ud83d\udc47\ud83c\udffc\n\n\u2714\ufe0f Veg/Non-Veg Patty Burger\n\u2714\ufe0f Small portion of Fries\n\u2714\ufe0fGarlic Bread \n\u2714\ufe0fSmall portion of White Pasta \n\u2714\ufe0f Brownie \n\u2714\ufe0fJuice"
+      ],
+      [
+        "Farewell Parties",
+        "A unique and engaging way to celebrate farewells through team-based experiences.",
+        "Breakout transforms farewells into meaningful memories with collaborative games that bring everyone together.",
+        "KM: 50-80Pax Max\nJP : 35-40Pax Max\nWF : 35-40Pax Max",
+        "RS~ 20000/-\nHF~ 40000/-\nCX~60000/- and above",
+        "Escaperoom:\nTeam up, crack clues, and conquer the clock to break free from the mystery room.\n\nShowstopper:\nA spectacular highlight moment or performance that steals the spotlight and wows the crowd.\n\nkaraoke:\nGrab the mic and sing your heart out for unforgettable fun and team-spirit moments.\n\nScavenger Hunt:\nSprint, search, and solve in a frantic race for the treasure.",
+        "Continental Food and Build Your Menu,                                                                    \n\u2714 Nachos & Cheese\n\u2714 Standard Burger\n\u2714 Pasta Cups\n\u2714 Garlic Bread\n\u2714 Mini Pizza",
+        "Food Option - (Veg and Non-Veg) \n\n Option - Mix Snack Box \n* Min Pax size - 10\n* Served in compartmental boxes\n* Items as follows \ud83d\udc47\ud83c\udffc\n\n\u2714\ufe0f Veg/Non-Veg Patty Burger\n\u2714\ufe0f Small portion of Fries\n\u2714\ufe0fGarlic Bread \n\u2714\ufe0fSmall portion of White Pasta \n\u2714\ufe0f Brownie \n\u2714\ufe0fJuice"
+      ],
+      [
+        "Couple Events",
+        "Intimate and exciting escape room experiences designed for couples to enjoy together.",
+        "Breakout strengthens connection through teamwork-focused puzzles that test communication and trust.",
+        "",
+        "700(ER) + 3500(Event Space)",
+        "Escaperoom:\nTeam up, crack clues, and conquer the clock to break free from the mystery room.\n\nShowstopper:\nA spectacular highlight moment or performance that steals the spotlight and wows the crowd.\n\nkaraoke:\nGrab the mic and sing your heart out for unforgettable fun and team-spirit moments.\n\nScavenger Hunt:\nSprint, search, and solve in a frantic race for the treasure.",
+        "Continental Food and Build Your Menu,                                                                    \n\u2714 Nachos & Cheese\n\u2714 Standard Burger\n\u2714 Pasta Cups\n\u2714 Garlic Bread\n\u2714 Mini Pizza",
+        "Food Option - (Veg and Non-Veg) \n\n Option - Mix Snack Box \n* Min Pax size - 10\n* Served in compartmental boxes\n* Items as follows \ud83d\udc47\ud83c\udffc\n\n\u2714\ufe0f Veg/Non-Veg Patty Burger\n\u2714\ufe0f Small portion of Fries\n\u2714\ufe0fGarlic Bread \n\u2714\ufe0fSmall portion of White Pasta \n\u2714\ufe0f Brownie \n\u2714\ufe0fJuice"
+      ],
+      [
+        "Corporate",
+        "Professional team-building events using escape rooms to enhance collaboration and problem-solving skills.",
+        "Breakout designs corporate experiences that boost teamwork, leadership, and communication in a fun, stress-free setting.",
+        "KM: 50-80Pax Max\nJP : 35-40Pax Max\nWF : 35-40Pax Max",
+        "699-2799",
+        "Escape Room\nCollaborate, decode clues, and beat the clock to escape before time runs out.\n\nLet loose\nRelax, recharge, and bond with your team through fun, light-hearted activities.\n\nDetective Job(Board game)\nAnalyze clues, think strategically, and solve the case together as a team.\n\nScavenger Hunt Activity\nSprint, search, and solve in a frantic race for the treasure.\n\nThe Unwind Challenge\nDe-stress and reconnect through engaging activities designed to refresh your team.",
+        "\u2714\ufe0fHi-Tea\nOptions 1: 179/-\nCoffee or Tea\nBanaka Cake\ncookies\nVeg Sandwich\n\n\u2714\ufe0fOptions 1: 279/-\nCoffee or Tea\nBanaka Cake\ncookies\nVeg Sandwich\nSomasa\nChips",
+        "Indian Buffet(Cookifi) : 799/-\n\n\u2714\ufe0f Veg/Non-Veg Buffet"
+      ],
+      [
+        "Virtual event",
+        "Engage your remote team with immersive virtual experiences that build connection, collaboration, and fun from anywhere.",
+        "Breakout delivers highly immersive, expertly guided virtual team-building events that feel as engaging and real as in-person activities.",
+        "Min- 15pax",
+        "Starts from 750+tax",
+        "Escape room\nRemote teams collaborate online to solve puzzles, crack clues, and beat the clock together.\n\nTeam building Activities\nInteractive online activities designed to boost engagement, communication, and team bonding.\n\nCode breakers\nImmerse yourself and your team in a series of thrilling challenges led by an energetic host! \n\nL&D\nFacilitated virtual experiences that drive learning, leadership development, and team effectiveness.",
+        "None"
+      ]
+    ]
+  }
+}
