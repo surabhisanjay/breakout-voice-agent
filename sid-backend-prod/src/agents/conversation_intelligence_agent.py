@@ -19,7 +19,7 @@ class ConversationIntelligenceAgent:
         transcript = self._transcript(memory)
         timeline_events = self._timeline_events(memory, transcript)
         booking_milestones = self._booking_milestones(memory)
-        key_takeaways = self._key_takeaways(memory)
+        key_takeaways = self._key_takeaways(memory, transcript)
         objections = self._customer_objections(memory, transcript)
         risks = self._conversation_risks(memory, sentiment, escalation_state, objections)
         action_items = self._action_items(memory, escalation_state)
@@ -123,31 +123,42 @@ class ConversationIntelligenceAgent:
                 milestones.append(label)
         return milestones
 
-    def _key_takeaways(self, memory: dict[str, Any]) -> list[str]:
+    def _key_takeaways(self, memory: dict[str, Any], transcript: list[dict[str, Any]]) -> list[str]:
         takeaways: list[str] = []
         support = dict(memory.get("support_context") or {})
         if support.get("existing_booking"):
-            takeaways.append("Existing booking requires support")
+            t = self._first_time(transcript, r"booked|existing booking")
+            takeaways.append(f"{t} Existing booking requires support")
         if support.get("payment_reported") == "paid":
-            takeaways.append("Customer reports payment completed")
+            t = self._first_time(transcript, r"paid|payment")
+            takeaways.append(f"{t} Customer reports payment completed")
         if support.get("confirmation_received") is False:
-            takeaways.append("Confirmation not received")
+            t = self._first_time(transcript, r"confirmation")
+            takeaways.append(f"{t} Confirmation not received")
         if memory.get("experience_level") == "beginner":
-            takeaways.append("First-time player")
+            t = self._first_time(transcript, r"first time")
+            takeaways.append(f"{t} First-time player")
         if memory.get("participants"):
-            takeaways.append(f"Group size: {memory['participants']}")
+            t = self._first_time(transcript, r"\b\d+\b|people|adults|kids")
+            takeaways.append(f"{t} Group size: {memory['participants']}")
         if memory.get("age_group"):
-            takeaways.append(f"Age group: {memory['age_group']}")
+            t = self._first_time(transcript, str(memory["age_group"]))
+            takeaways.append(f"{t} Age group: {memory['age_group']}")
         if memory.get("location"):
-            takeaways.append(f"Selected location: {memory['location']}")
+            t = self._first_time(transcript, str(memory["location"]))
+            takeaways.append(f"{t} Selected location: {memory['location']}")
         if memory.get("room"):
-            takeaways.append(f"Selected room: {memory['room']}")
+            t = self._first_time(transcript, str(memory["room"]).split(" or ")[0])
+            takeaways.append(f"{t} Selected room: {memory['room']}")
         elif memory.get("recommended_option"):
-            takeaways.append(f"Recommended option: {memory['recommended_option']}")
+            t = self._first_time(transcript, str(memory["recommended_option"]).split(" or ")[0])
+            takeaways.append(f"{t} Recommended option: {memory['recommended_option']}")
         if memory.get("selected_slot"):
-            takeaways.append(f"Selected slot: {memory['selected_slot']}")
+            t = self._first_time(transcript, str(memory["selected_slot"]))
+            takeaways.append(f"{t} Selected slot: {memory['selected_slot']}")
         if memory.get("booking_id") and memory.get("booking_ref"):
-            takeaways.append("Booking confirmed with ID and reference")
+            t = self._time_for_turn(max(len(transcript) - 1, 0))
+            takeaways.append(f"{t} Booking confirmed with ID and reference")
         return takeaways
 
     def _customer_objections(self, memory: dict[str, Any], transcript: list[dict[str, Any]]) -> list[str]:

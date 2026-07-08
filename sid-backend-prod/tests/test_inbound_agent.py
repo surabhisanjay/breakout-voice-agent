@@ -689,6 +689,62 @@ def test_yes_after_compare_prompt_gives_comparison(tmp_path: Path) -> None:
     assert "Would you like me to compare those two?" not in comparison
 
 
+def test_tell_me_after_room_offer_gives_useful_styles_without_permission_loop(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.add_turn(
+        "agent",
+        "I can help you explore our escape room options. Would you like to hear about the available rooms?",
+    )
+    agent.memory.save()
+
+    response = agent.handle_message("Yeah, tell me.")["response"]
+
+    assert "detective mysteries" in response
+    assert "rescue missions" in response
+    assert "Which location" in response
+    assert "Would you like" not in response
+
+
+def test_okay_after_room_offer_lists_branch_options(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.data["location"] = "Whitefield"
+    agent.memory.add_turn("agent", "I can tell you about the room options.")
+    agent.memory.save()
+
+    response = agent.handle_message("Okay.")["response"]
+
+    assert "At Whitefield" in response
+    assert "Which style" in response
+    assert "Would you like" not in response
+
+
+def test_all_rooms_never_invents_loading_state(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.add_turn(
+        "agent",
+        "I can share the available escape room options. Would you like to see all rooms?",
+    )
+    agent.memory.save()
+
+    response = agent.handle_message("All rooms.")["response"]
+
+    assert "Which location" in response
+    assert "loading" not in response.lower()
+    assert "hold on" not in response.lower()
+
+
+def test_loading_complaint_repairs_previous_fake_loading_turn(tmp_path: Path) -> None:
+    agent = make_agent(tmp_path)
+    agent.memory.add_turn("agent", "The room options are loading. Please hold on.")
+    agent.memory.save()
+
+    response = agent.handle_message("Why is it not loading?")["response"]
+
+    assert "nothing you need to wait for" in response.lower()
+    assert "Which location" in response
+    assert "try again" not in response.lower()
+
+
 def test_partial_transcript_asks_for_clarification(tmp_path: Path) -> None:
     agent = make_agent(tmp_path)
     agent.handle_message("We are six adults visiting Whitefield.")

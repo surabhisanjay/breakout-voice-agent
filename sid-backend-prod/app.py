@@ -8,7 +8,10 @@ import threading
 import time
 import base64
 import csv
+import hashlib
+import hmac
 import io
+import httpx
 from argparse import Namespace
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -29,6 +32,7 @@ from src.config.env_loader import booking_provider_label
 from src.agents.booking_agent import BookingAgent
 from src.agents.conversation_intelligence_agent import ConversationIntelligenceAgent
 from src.agents.evaluation_agent import EvaluationAgent
+from src.agents.learning_agent import LearningAgent
 from src.agents.inbound_agent import InboundAgent
 from src.memory.conversation_memory import ConversationMemory
 from src.services.wati_client import WatiClient
@@ -589,11 +593,21 @@ def _reporting_payload(
         "faq_count": sum(joined.count(term) for term in ("parking", "food", "price", "birthday", "cancel", "reschedul")),
     }
     topics = [term for term in ("parking", "food", "pricing", "birthday", "cancellation", "reschedule", "payment") if term in joined]
+    learning_report = LearningAgent().analyze([{
+        "transcript": transcript,
+        "memory": memory,
+        "sentiment": sentiment,
+        "escalation": escalation,
+    }]).to_dict()
     learning = {
         "observed_topics": topics,
         "drop_off_stage": "escalation" if escalated else ("payment_pending" if booking_id else "in_progress"),
-        "conversation_loops_found": [],
+        "conversation_loops_found": [
+            item for item in learning_report["recurring_issues"]
+            if item["issue"] in {"repeated_question", "repeated_response", "permission_loop"}
+        ],
         "backend_errors": [],
+        **learning_report,
     }
     follow_up = {"recommendations": list(getattr(result, "follow_up_recommendations", []) or [])}
     payload = {
@@ -697,6 +711,7 @@ def _persist_chat_result(session_id: str, runtime: SessionRuntime, result: Any, 
         summary = {}
     summary_text = str(summary.get("summary") or getattr(result, "response", "") or "")
     existing = next((call for call in org["calls"] if call.get("session_id") == session_id), None)
+    is_new_session = existing is None
     if existing is None:
         existing = {
             "id": closira_store.next_id(org, "calls"),
@@ -782,6 +797,154 @@ def _persist_chat_result(session_id: str, runtime: SessionRuntime, result: Any, 
                 "sentiment": getattr(result, "sentiment_analysis", {}) or {},
             }
         )
+
+    # ── Push to real Closira CRM ──────────────────────────────────────────────
+    _notify_closira(
+        session_id=session_id,
+        memory=memory,
+        result=result,
+        transcript=transcript,
+        is_new_session=is_new_session,
+    )
+
+def _notify_closira(
+    session_id: str,
+    memory: dict[str, Any],
+    result: Any,
+    transcript: list[dict[str, Any]],
+    is_new_session: bool,
+) -> None:
+    """Fire-and-forget: push call data to the real Closira CRM via signed webhooks.
+
+    Runs in a daemon thread so it never blocks the main response path.
+    Safe to call on every turn — Closira's call-ended is an upsert by session_id.
+    """
+    base_url = os.environ.get("CLOSIRA_BASE_URL", "").rstrip("/")
+    secret = os.environ.get("CLOSIRA_WEBHOOK_SECRET", "")
+    org_id = int(os.environ.get("CLOSIRA_ORG_ID", "1"))
+
+    if not base_url or not secret:
+        logger.debug("closira.notify.skipped reason=missing_config")
+        return
+
+    def _sign(payload_bytes: bytes) -> str:
+        return hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+
+    def _post_webhook(path: str, body: dict) -> None:
+        try:
+            payload_bytes = json.dumps(body, default=str).encode()
+            sig = _sign(payload_bytes)
+            ts = int(time.time())
+            r = httpx.post(
+                f"{base_url}/webhooks/vapi{path}",
+                content=payload_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Vapi-Signature": sig,
+                    "X-Timestamp": str(ts),
+                },
+                timeout=10.0,
+            )
+            logger.info("closira.webhook path=%s status=%s", path, r.status_code)
+        except Exception as exc:
+            logger.warning("closira.webhook.error path=%s error=%s", path, exc)
+
+    # ── Build rich conversation_summary ──────────────────────────────────────
+    summary = getattr(result, "ai_summary", None) or {}
+    if not isinstance(summary, dict):
+        summary = {}
+
+    escalation = getattr(result, "escalation", None) or {}
+    escalated = bool(escalation.get("escalate") or escalation.get("required"))
+    final_sentiment = str(memory.get("sentiment") or "neutral").lower()
+
+    if final_sentiment in {"negative", "frustrated", "angry"}:
+        overall_sentiment = "negative"
+        customer_frustration = True
+    elif final_sentiment in {"positive", "happy"}:
+        overall_sentiment = "positive"
+        customer_frustration = False
+    else:
+        overall_sentiment = "neutral"
+        customer_frustration = False
+
+    conversation_summary = {
+        "one_line_summary": summary.get("one_line_summary") or summary.get("summary") or "",
+        "full_summary": summary.get("full_summary") or summary.get("summary") or "",
+        "key_takeaways": summary.get("key_takeaways") or [],
+        "action_items": summary.get("action_items") or [],
+        "resolution_status": "escalated" if escalated else ("booking_reserved" if memory.get("booking_id") else "in_progress"),
+        "intent": str(getattr(result, "intent", "") or memory.get("intent") or ""),
+        "customer_frustration": customer_frustration,
+        "follow_up_recommendation": summary.get("follow_up_recommendation") or "",
+        "overall_sentiment": overall_sentiment,
+        "sentiment_journey": getattr(result, "sentiment_analysis", {}).get("sentiment_journey", []) or memory.get("sentiment_analysis", {}).get("sentiment_journey", []),
+    }
+
+    # ── Map transcript to Closira format ─────────────────────────────────────
+    CUSTOMER_ROLES = {"customer", "user"}
+    sentiment_history = memory.get("sentiment_history") or []
+    history = []
+    for idx, t in enumerate(transcript):
+        sentiment_score = 0.5
+        if idx < len(sentiment_history):
+            sentiment_score = sentiment_history[idx].get("sentiment_score", 0.5)
+        elif sentiment_history:
+            sentiment_score = sentiment_history[-1].get("sentiment_score", 0.5)
+
+        history.append({
+            "speaker": "customer" if str(t.get("speaker_type") or t.get("role") or "").lower() in CUSTOMER_ROLES else "assistant",
+            "text": str(t.get("text") or t.get("spoken_text") or ""),
+            "sequence": t.get("sequence") or (idx + 1),
+            "spoken_at_second": float(idx * 8.0),
+            "sentiment_score": float(sentiment_score),
+        })
+
+    phone = str(memory.get("phone") or memory.get("caller_phone") or "")
+    duration_seconds = max(len(transcript) * 8, 1)
+
+    def _run() -> None:
+        # 1. call-started — only on the very first turn of a new session
+        if is_new_session:
+            _post_webhook("/call-started", {
+                "call_id": session_id,
+                "session_id": session_id,
+                "timestamp": int(time.time()),
+                "direction": "inbound",
+                "phone_number": phone,
+                "caller_phone": phone,
+                "org_id": org_id,
+            })
+
+        # 2. call-ended — upsert with full AI data on every turn
+        _post_webhook("/call-ended", {
+            "call_id": session_id,
+            "session_id": session_id,
+            "timestamp": int(time.time()),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "duration_seconds": duration_seconds,
+            "outcome": conversation_summary["resolution_status"],
+            "org_id": org_id,
+            "conversation_summary": conversation_summary,
+            "conversation_history": history,
+            "call_recording_reference": "",
+            "booking": _extract_booking_payload(result),
+            "payment": _extract_payment_payload(result) if "payment_link" in str(result) else {},
+        })
+
+        # 3. escalation — alert Closira if escalation was triggered
+        if escalated:
+            _post_webhook("/escalation", {
+                "call_id": session_id,
+                "session_id": session_id,
+                "timestamp": int(time.time()),
+                "reason": str(escalation.get("reason") or "Escalation requested"),
+                "priority": "high",
+                "org_id": org_id,
+            })
+
+    threading.Thread(target=_run, daemon=True).start()
+
 
 
 @app.get("/health", response_model=HealthResponse)

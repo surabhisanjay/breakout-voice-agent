@@ -318,7 +318,87 @@ def _question_core(response: str) -> str:
     return ""
 
 
+def _sync_to_closira(inbound: InboundAgent, result: AgentResponse, session_id: str) -> None:
+    try:
+        from src.integrations.closira.client import ClosiraCRMClient
+        crm = ClosiraCRMClient()
+        
+        customer_name = inbound.memory.data.get("customer_name")
+        phone = inbound.memory.data.get("phone")
+        
+        if customer_name and phone and not inbound.memory.data.get("closira_contact_id"):
+            parts = str(customer_name).strip().split(" ", 1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ""
+            
+            contact_id = crm.create_contact(
+                first_name=first_name,
+                last_name=last_name,
+                phone=str(phone),
+            )
+            if contact_id:
+                inbound.memory.data["closira_contact_id"] = contact_id
+                
+                lead_id = crm.create_lead(
+                    contact_id=contact_id,
+                    first_name=first_name,
+                    last_name=last_name,
+                    phone=str(phone),
+                    location=inbound.memory.data.get("location") or "Koramangala",
+                    event_type=inbound.memory.data.get("event_type") or "Escape Room",
+                    party_size=int(inbound.memory.data.get("participants") or 1),
+                    event_date=inbound.memory.data.get("preferred_date") or "",
+                )
+                if lead_id:
+                    inbound.memory.data["closira_lead_id"] = lead_id
+                    inbound.memory.data["closira_lead_status"] = "new"
+                    
+        lead_id = inbound.memory.data.get("closira_lead_id")
+        if lead_id:
+            current_status = inbound.memory.data.get("closira_lead_status")
+            
+            is_booked = bool(
+                inbound.memory.data.get("completed_booking") 
+                or inbound.memory.data.get("booking_id")
+                or (result.next_agent == "booking_agent" and hasattr(result, "booking_result") and result.booking_result and result.booking_result.get("confirmed"))
+            )
+            
+            if is_booked and current_status != "booking":
+                crm.update_lead_stage(lead_id, "booking")
+                inbound.memory.data["closira_lead_status"] = "booking"
+                
+            elif result.next_agent == "escalation_agent" and current_status != "escalated":
+                crm.update_lead_stage(lead_id, "escalated")
+                inbound.memory.data["closira_lead_status"] = "escalated"
+                
+                contact_id = inbound.memory.data.get("closira_contact_id")
+                if contact_id:
+                    reason = inbound.memory.data.get("escalation_state", {}).get("reason") or "Customer requested human"
+                    handoff_summary = getattr(result, "handoff_summary", None) or {"summary": reason}
+                    crm.raise_escalation(
+                        session_id=session_id,
+                        contact_id=contact_id,
+                        reason=reason,
+                        summary=handoff_summary,
+                    )
+        inbound.memory.save()
+    except Exception as exc:
+        logger.error("Error during Closira CRM synchronization: %s", exc)
+
+
 def dispatch(
+    message: str,
+    inbound: InboundAgent,
+    booking: BookingAgent | None,
+    active_agent: str,
+    session_id: str = "",
+) -> tuple[AgentResponse, BookingAgent | None, str]:
+    result, booking, active_agent = _dispatch_impl(message, inbound, booking, active_agent, session_id)
+    _sync_to_closira(inbound, result, session_id)
+    return result, booking, active_agent
+
+
+def _dispatch_impl(
     message: str,
     inbound: InboundAgent,
     booking: BookingAgent | None,

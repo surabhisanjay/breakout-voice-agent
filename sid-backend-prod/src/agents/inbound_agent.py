@@ -1566,6 +1566,32 @@ class InboundAgent:
             # but provide a friendly acknowledgement
             return "Let me check that for you. Which location are you looking at?"
 
+        if self._is_fake_loading_followup(lowered):
+            if not location_known:
+                return "There is nothing you need to wait for — I can give you the options now. Which location works best for you?"
+            options = self.recommender.available_options(self.memory.data, limit=5)
+            if options:
+                return f"Here they are: {self._spoken_list(options)}. Which one would you like to hear about first?"
+            return "I do not have a matching single-room option for this group size, so the events team would need to coordinate multiple rooms."
+
+        # Short replies such as "okay" and "yeah, tell me" inherit the offer
+        # made in the previous turn. Resolve that context deterministically so
+        # the caller is not sent through another permission loop.
+        if self._is_room_options_continuation(lowered):
+            options = self.recommender.available_options(self.memory.data, limit=3)
+            location = str(self.memory.data.get("location", "")).strip()
+            if not location_known:
+                return (
+                    "Sure — you can choose from detective mysteries, rescue missions, and faster high-pressure challenges. "
+                    "Which location works best for you?"
+                )
+            if not options:
+                return (
+                    "A single room will not fit the current group, so the events team would need to coordinate multiple rooms. "
+                    "What date are you considering?"
+                )
+            return f"At {location}, I'd narrow it to {self._spoken_list(options)}. Which style sounds most fun to you?"
+
         # ------------------------------------------------------------------ #
         # BUG 2: LOCATION GUARD for room inventory / recommendation queries   #
         # Never list specific room names or branches until location is known. #
@@ -3433,6 +3459,24 @@ class InboundAgent:
     def _is_affirmative_follow_up(lowered: str) -> bool:
         return lowered.strip(" .!?") in {"yes", "yes please", "sure", "okay", "ok", "please do"}
 
+    def _is_room_options_continuation(self, lowered: str) -> bool:
+        cleaned = re.sub(r"[^a-z0-9']+", " ", lowered.lower()).strip()
+        continuation = cleaned in {
+            "okay", "ok", "sure", "yes", "yes please", "yeah", "yep",
+            "tell me", "yeah tell me", "yes tell me", "please tell me",
+            "go ahead", "what are they", "show me", "list them",
+        }
+        if not continuation:
+            return False
+        for turn in reversed(self.memory.data.get("conversation", [])[-6:]):
+            if turn.get("role") != "agent":
+                continue
+            previous = str(turn.get("content") or "").lower()
+            return bool(
+                re.search(r"\b(?:rooms?|room options?|available options?|recommendation|which style|full list)\b", previous)
+            )
+        return False
+
     @staticmethod
     def _is_contextual_best_question(lowered: str) -> bool:
         cleaned = lowered.strip(" .!?")
@@ -3490,13 +3534,25 @@ class InboundAgent:
 
     @staticmethod
     def _is_room_inventory_query(lowered: str) -> bool:
-        cleaned = lowered.strip(" .!?")
+        cleaned = re.sub(r"[^a-z0-9']+", " ", lowered.lower()).strip()
         if re.search(r"\b(?:recommend|recommendation|suggest|choose)\b", cleaned):
             return False
         return bool(
             re.search(r"\bwhat\s+rooms?\s+(?:do|are)\b", cleaned)
             or re.search(r"\b(?:all|rooms?|games?)\s+(?:are\s+)?available\b", cleaned)
-            or cleaned in {"what are all available", "what do you have", "show me all rooms"}
+            or cleaned in {
+                "all rooms", "all the rooms", "all of them", "the full list", "full list",
+                "what are all available", "what do you have", "show me all rooms", "list all rooms",
+            }
+        )
+
+    def _is_fake_loading_followup(self, lowered: str) -> bool:
+        if not re.search(r"\b(?:why|still|isn't|is not|not)\b.*\bload(?:ing|ed)?\b|\bnot loading\b", lowered):
+            return False
+        return any(
+            turn.get("role") == "agent"
+            and re.search(r"\b(?:loading|hold on|one moment|try again)\b", str(turn.get("content") or "").lower())
+            for turn in self.memory.data.get("conversation", [])[-6:]
         )
 
     @staticmethod
