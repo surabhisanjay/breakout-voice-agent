@@ -10,6 +10,7 @@ import base64
 import csv
 import hashlib
 import hmac
+import inspect
 import io
 import httpx
 from argparse import Namespace
@@ -35,6 +36,9 @@ from src.agents.evaluation_agent import EvaluationAgent
 from src.agents.learning_agent import LearningAgent
 from src.agents.inbound_agent import InboundAgent
 from src.memory.conversation_memory import ConversationMemory
+from src.services.phase1_state import build_phase1_business_state
+from src.services.realtime import get_default_realtime_publisher
+from src.services.realtime.publisher import transcript_chunk_from_turn
 from src.services.wati_client import WatiClient
 
 
@@ -284,6 +288,17 @@ async def log_request_validation_error(request: Request, exc: RequestValidationE
     return await request_validation_exception_handler(request, exc)
 
 
+def _dispatch_turn(
+    message: str,
+    runtime: SessionRuntime,
+    session_id: str,
+) -> tuple[Any, BookingAgent | None, str]:
+    parameter_count = len(inspect.signature(dispatch).parameters)
+    if parameter_count >= 5:
+        return dispatch(message, runtime.inbound, runtime.booking, runtime.active_agent, session_id)
+    return dispatch(message, runtime.inbound, runtime.booking, runtime.active_agent)
+
+
 def _validate_session_id(session_id: str) -> str:
     clean = session_id.strip()
     if not SESSION_ID_PATTERN.fullmatch(clean):
@@ -307,6 +322,416 @@ def _whatsapp_session_id(phone: str) -> str:
     if not digits:
         raise HTTPException(status_code=400, detail="WhatsApp sender phone is required.")
     return _validate_session_id(f"whatsapp:{digits}")
+
+
+_REALTIME_BOOKING_KEYS = (
+    "booking_id",
+    "booking_ref",
+    "booking_order_id",
+    "order_id",
+    "orderId",
+    "booking_status",
+    "bookingStatus",
+    "payment_url",
+    "paymentUrl",
+    "payment_link",
+    "payment_status",
+    "paymentStatus",
+    "payment_deadline",
+    "paymentDeadline",
+    "selected_slot",
+    "room",
+    "location",
+    "preferred_date",
+    "participants",
+    "price_breakdown",
+)
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _realtime_call_id(session_id: str, runtime: SessionRuntime) -> str:
+    memory = runtime.inbound.memory.data
+    return str(
+        memory.get("call_id")
+        or memory.get("vapi_call_id")
+        or memory.get("vapiCallId")
+        or memory.get("conversation_id")
+        or session_id
+    )
+
+
+def _remember_realtime_publish(memory: dict[str, Any], event: str, result: Any) -> None:
+    history = list(memory.get("_realtime_publish_results") or [])
+    history.append(
+        {
+            "event": event,
+            "channel": getattr(result, "channel", ""),
+            "attempted": bool(getattr(result, "attempted", False)),
+            "sent": bool(getattr(result, "sent", False)),
+            "subscriber_count": int(getattr(result, "subscriber_count", 0) or 0),
+            "retry_count": int(getattr(result, "retry_count", 0) or 0),
+            "latency_ms": float(getattr(result, "latency_ms", 0.0) or 0.0),
+            "reason": str(getattr(result, "reason", "") or ""),
+        }
+    )
+    memory["_realtime_publish_results"] = history[-80:]
+
+
+def _publish_realtime_event(
+    runtime: SessionRuntime,
+    call_id: str,
+    event: str,
+    payload: dict[str, Any],
+    *,
+    once_key: str = "",
+) -> bool:
+    memory = runtime.inbound.memory.data
+    published_once = set(memory.get("_realtime_published_once") or [])
+    if once_key and once_key in published_once:
+        return False
+    business_state = dict(memory.get("phase1_business_state") or build_phase1_business_state(memory))
+    enriched_payload = {**business_state, **payload, "business_state": business_state}
+    try:
+        result = get_default_realtime_publisher().publish(event, call_id, enriched_payload)
+    except Exception as exc:  # pragma: no cover - defensive best-effort guard
+        logger.exception("REALTIME_EVENT_UNHANDLED event=%s call_id=%s error=%s", event, call_id, exc.__class__.__name__)
+        return False
+    _remember_realtime_publish(memory, event, result)
+    if once_key and result.sent:
+        published_once.add(once_key)
+        memory["_realtime_published_once"] = sorted(published_once)
+    return bool(result.sent)
+
+
+def _booking_state_changed(before: dict[str, Any], after: dict[str, Any], response: ChatResponse | None) -> bool:
+    return any(_stable_json(before.get(key)) != _stable_json(after.get(key)) for key in _REALTIME_BOOKING_KEYS)
+
+
+def _booking_event_payload(memory: dict[str, Any], response: ChatResponse | None, result: Any) -> dict[str, Any]:
+    if response is not None:
+        booking = dict(response.booking or {})
+        payment = dict(response.payment or {})
+        price_breakdown = dict(response.price_breakdown or {})
+    else:
+        booking = _extract_booking_payload(result)
+        payment = _extract_payment_payload(result)
+        price_breakdown = _extract_price_breakdown(result)
+    return {
+        "booking": booking,
+        "payment": payment,
+        "price_breakdown": price_breakdown,
+        "state": {key: memory.get(key) for key in _REALTIME_BOOKING_KEYS if memory.get(key) not in (None, "")},
+    }
+
+
+def _timeline_events_for_result(result: Any) -> list[dict[str, Any]]:
+    timeline = getattr(result, "timeline_events", None) or []
+    if not timeline and isinstance(getattr(result, "call_intelligence", None), dict):
+        timeline = result.call_intelligence.get("timeline_events") or []
+    return [dict(item) for item in timeline if isinstance(item, dict)]
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _float_score(value: Any) -> float:
+    try:
+        return round(max(0.0, min(float(value), 1.0)), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recording_reference(payload: dict[str, Any]) -> str:
+    recording = payload.get("recording")
+    if isinstance(recording, str):
+        return recording.strip()
+    recording_data = _safe_dict(recording)
+    return str(
+        recording_data.get("url")
+        or recording_data.get("recording_url")
+        or recording_data.get("reference")
+        or recording_data.get("id")
+        or payload.get("call_recording_reference")
+        or ""
+    ).strip()
+
+
+def build_escalation_context(session_id: str, chat_payload: dict[str, Any]) -> dict[str, Any]:
+    escalation = _safe_dict(chat_payload.get("escalation"))
+    handoff = _safe_dict(chat_payload.get("handoff_summary"))
+    summary = _safe_dict(chat_payload.get("conversation_summary"))
+    business_state = _safe_dict(chat_payload.get("business_state"))
+    booking = _safe_dict(chat_payload.get("booking"))
+    payment = _safe_dict(chat_payload.get("payment"))
+    customer_details = _safe_dict(chat_payload.get("customer_details"))
+    customer_profile = _safe_dict(chat_payload.get("customer_profile"))
+
+    customer_details = {
+        **customer_details,
+        "name": customer_details.get("name") or handoff.get("customer_name") or summary.get("customer_name") or customer_profile.get("name") or "",
+        "phone": customer_details.get("phone") or handoff.get("phone") or summary.get("phone") or customer_profile.get("phone") or "",
+        "email": customer_details.get("email") or handoff.get("email") or customer_profile.get("email") or "",
+        "whatsapp_number": customer_details.get("whatsapp_number") or handoff.get("whatsapp_number") or customer_profile.get("whatsapp_number") or "",
+    }
+    conversation_summary = summary or {
+        "summary": handoff.get("conversation_summary") or handoff.get("summary") or chat_payload.get("response") or ""
+    }
+    transcript = _safe_list(chat_payload.get("conversation_history")) or _safe_list(chat_payload.get("transcript"))
+    escalation_reason = str(escalation.get("reason") or business_state.get("escalation_reason") or "Escalation requested")
+    priority = str(escalation.get("priority") or business_state.get("priority") or "medium")
+    customer_intent = str(
+        chat_payload.get("customer_intent")
+        or business_state.get("customer_intent")
+        or summary.get("intent")
+        or handoff.get("intent")
+        or "unknown"
+    )
+    confidence_score = _float_score(
+        chat_payload.get("confidence_score")
+        if chat_payload.get("confidence_score") not in (None, "")
+        else business_state.get("confidence_score")
+    )
+    booking_status = str(
+        business_state.get("booking_status")
+        or booking.get("status")
+        or payment.get("booking_status")
+        or handoff.get("booking_status")
+        or "not_started"
+    )
+    payment_status = str(
+        business_state.get("payment_status")
+        or payment.get("status")
+        or summary.get("payment_status")
+        or "not_started"
+    )
+    preferred_contact_method = str(
+        chat_payload.get("preferred_contact_method")
+        or customer_details.get("preferred_contact_method")
+        or chat_payload.get("channel")
+        or ("whatsapp" if session_id.startswith("whatsapp:") else "web_chat")
+    )
+    timestamp = str(chat_payload.get("timestamp") or business_state.get("timestamp") or _now_iso())
+
+    return {
+        "customer_details": customer_details,
+        "conversation_summary": conversation_summary,
+        "transcript": transcript,
+        "call_recording_reference": _recording_reference(chat_payload),
+        "escalation_reason": escalation_reason,
+        "priority": priority,
+        "customer_intent": customer_intent,
+        "confidence_score": confidence_score,
+        "booking_status": booking_status,
+        "payment_status": payment_status,
+        "preferred_contact_method": preferred_contact_method,
+        "timestamp": timestamp,
+    }
+
+
+def _integration_payload(
+    session_id: str,
+    memory: dict[str, Any],
+    result: Any,
+    response: ChatResponse | None,
+) -> dict[str, Any]:
+    if response is not None:
+        payload = response.model_dump()
+    else:
+        payload = {
+            "booking": _extract_booking_payload(result),
+            "payment": _extract_payment_payload(result),
+            "conversation_summary": dict(memory.get("conversation_summary") or {}),
+            "handoff_summary": getattr(result, "handoff_summary", None),
+            "escalation": dict(getattr(result, "escalation", {}) or memory.get("escalation_state") or {}),
+            "customer_profile": dict(getattr(result, "customer_profile", {}) or {}),
+            "conversation_history": list(getattr(result, "transcript", []) or memory.get("conversation") or []),
+            "transcript": list(getattr(result, "transcript", []) or []),
+            "recording": dict(getattr(result, "recording", {}) or {}),
+        }
+    recommendation = getattr(result, "recommendation", None)
+    if isinstance(recommendation, dict) and recommendation:
+        payload["recommendation"] = recommendation
+    elif response is not None and response.booking.get("room"):
+        payload["recommendation"] = {"option": response.booking.get("room")}
+    else:
+        payload["recommendation"] = {}
+    business_state = dict(memory.get("phase1_business_state") or build_phase1_business_state(memory, result))
+    payload.update(
+        {
+            "business_state": business_state,
+            "customer_intent": business_state["customer_intent"],
+            "confidence_score": business_state["confidence_score"],
+            "preferred_contact_method": str(
+                memory.get("preferred_contact_method")
+                or memory.get("channel")
+                or ("whatsapp" if session_id.startswith("whatsapp:") else "web_chat")
+            ),
+            "channel": str(memory.get("channel") or ("whatsapp" if session_id.startswith("whatsapp:") else "web_chat")),
+            "customer_details": {
+                "name": str(memory.get("customer_name") or ""),
+                "first_name": str(memory.get("first_name") or ""),
+                "last_name": str(memory.get("last_name") or ""),
+                "phone": str(memory.get("phone") or ""),
+                "email": str(memory.get("email") or ""),
+                "whatsapp_number": str(memory.get("whatsapp_number") or ""),
+            },
+            "timestamp": business_state["timestamp"],
+        }
+    )
+    return payload
+
+
+def _publish_realtime_updates(
+    session_id: str,
+    runtime: SessionRuntime,
+    result: Any,
+    response: ChatResponse | None,
+    start_index: int,
+    memory_before: dict[str, Any],
+    latency_ms: float,
+) -> None:
+    memory = runtime.inbound.memory.data
+    call_id = _realtime_call_id(session_id, runtime)
+    memory["phase1_business_state"] = build_phase1_business_state(memory, result)
+    conversation = memory.get("conversation")
+    turn_count = len(conversation) if isinstance(conversation, list) else 0
+
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "call.started",
+        {"session_id": session_id, "channel": memory.get("channel") or "web_chat"},
+        once_key="call.started",
+    )
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "agent.state",
+        {
+            "session_id": session_id,
+            "active_agent": runtime.active_agent,
+            "next_agent": getattr(result, "next_agent", ""),
+            "intent": getattr(result, "intent", "") or memory.get("intent", ""),
+        },
+    )
+    _publish_realtime_event(
+        runtime,
+        call_id,
+        "call.updated",
+        {
+            "session_id": session_id,
+            "turn_count": turn_count,
+            "active_agent": runtime.active_agent,
+            "latency_ms": round(latency_ms, 1),
+        },
+    )
+
+    conversation = runtime.inbound.memory.data.get("conversation")
+    if isinstance(conversation, list):
+        for index, turn in enumerate(conversation[start_index:], start=start_index + 1):
+            if not isinstance(turn, dict):
+                continue
+            chunk = transcript_chunk_from_turn(turn)
+            if chunk is None:
+                continue
+            _publish_realtime_event(
+                runtime,
+                call_id,
+                "transcript.chunk",
+                {
+                    "speaker": chunk.speaker,
+                    "text": chunk.text,
+                    "timestamp": chunk.timestamp,
+                    "event_type": chunk.event_type,
+                    "sequence": index,
+                },
+            )
+
+    sentiment = dict(getattr(result, "sentiment_analysis", {}) or memory.get("sentiment_analysis") or {})
+    if sentiment and _stable_json(memory_before.get("sentiment_analysis") or {}) != _stable_json(sentiment):
+        _publish_realtime_event(runtime, call_id, "sentiment.updated", {"session_id": session_id, "sentiment": sentiment})
+
+    intent_after = str(getattr(result, "intent", "") or memory.get("intent") or "")
+    intent_before = str(memory_before.get("intent") or "")
+    if intent_after and intent_after != intent_before:
+        _publish_realtime_event(runtime, call_id, "intent.updated", {"session_id": session_id, "intent": intent_after})
+
+    seen_timeline = set(memory.get("_realtime_timeline_event_keys") or [])
+    for item in _timeline_events_for_result(result):
+        key = _stable_json(item)
+        if key in seen_timeline:
+            continue
+        sent = _publish_realtime_event(runtime, call_id, "timeline.event", {"session_id": session_id, "timeline_event": item})
+        if sent:
+            seen_timeline.add(key)
+    if seen_timeline:
+        memory["_realtime_timeline_event_keys"] = sorted(seen_timeline)[-200:]
+
+    if _booking_state_changed(memory_before, memory, response):
+        booking_payload = _booking_event_payload(memory, response, result)
+        booking_id = str(memory.get("booking_id") or booking_payload["booking"].get("booking_id") or "")
+        if booking_id and not memory_before.get("booking_id"):
+            _publish_realtime_event(
+                runtime,
+                call_id,
+                "booking.created",
+                booking_payload,
+                once_key=f"booking.created:{booking_id}",
+            )
+        _publish_realtime_event(runtime, call_id, "booking.updated", booking_payload)
+
+    escalation = dict(getattr(result, "escalation", {}) or memory.get("escalation_state") or {})
+    escalation_active = bool(escalation.get("escalate") or escalation.get("required") or getattr(result, "next_agent", "") == "escalation_agent")
+    if escalation_active:
+        integration_payload = _integration_payload(session_id, memory, result, response)
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "escalation.created",
+            {
+                "session_id": session_id,
+                "escalation": escalation,
+                "handoff_summary": getattr(result, "handoff_summary", None) or {},
+                "escalation_payload": build_escalation_context(session_id, integration_payload),
+            },
+            once_key="escalation.created",
+        )
+
+    if response is not None and response.booking.get("booking_id"):
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "summary.ready",
+            {
+                "session_id": session_id,
+                "conversation_summary": response.conversation_summary,
+                "handoff_summary": response.handoff_summary,
+                "evaluation": response.evaluation,
+                "metrics": response.metrics,
+                "csat": response.csat,
+            },
+            once_key="summary.ready",
+        )
+        _publish_realtime_event(
+            runtime,
+            call_id,
+            "call.ended",
+            {
+                "session_id": session_id,
+                "outcome": response.conversation_summary.get("outcome") or "booking_reserved",
+                "booking": response.booking,
+                "payment": response.payment,
+            },
+            once_key="call.ended",
+        )
 
 
 def _first_text(value: Any, keys: set[str]) -> str:
@@ -1014,15 +1439,11 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     runtime = _get_runtime(request.session_id)
     _mem_before = dict(runtime.inbound.memory.data)   # snapshot BEFORE dispatch
+    _conversation_before = _mem_before.get("conversation")
+    _realtime_start_index = len(_conversation_before) if isinstance(_conversation_before, list) else 0
     _t0 = time.perf_counter()
     with _lock:
-        result, booking, active_agent = dispatch(
-            message,
-            runtime.inbound,
-            runtime.booking,
-            runtime.active_agent,
-            request.session_id,
-        )
+        result, booking, active_agent = _dispatch_turn(message, runtime, request.session_id)
         runtime.booking = booking
         runtime.active_agent = active_agent
     _latency_ms = (time.perf_counter() - _t0) * 1000
@@ -1055,6 +1476,16 @@ def chat(request: ChatRequest) -> ChatResponse:
         **reporting,
     )
     _persist_chat_result(request.session_id, runtime, result, channel="web_chat")
+    _publish_realtime_updates(
+        request.session_id,
+        runtime,
+        result,
+        response,
+        start_index=_realtime_start_index,
+        memory_before=_mem_before,
+        latency_ms=_latency_ms,
+    )
+    runtime.inbound.memory.save()
     logger.info("CHAT_RESPONSE=%s", _json_log_value(response.model_dump()))
     return response
 
@@ -1076,17 +1507,15 @@ async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
 
     session_id = _whatsapp_session_id(phone)
     runtime = _get_runtime(session_id)
+    _mem_before = dict(runtime.inbound.memory.data)
+    _conversation_before = _mem_before.get("conversation")
+    _realtime_start_index = len(_conversation_before) if isinstance(_conversation_before, list) else 0
+    _t0 = time.perf_counter()
     with _lock:
         runtime.inbound.memory.data["channel"] = "whatsapp"
         runtime.inbound.memory.data["whatsapp_number"] = "".join(ch for ch in str(phone) if ch.isdigit())
         runtime.inbound.memory.save()
-        result, booking, active_agent = dispatch(
-            message,
-            runtime.inbound,
-            runtime.booking,
-            runtime.active_agent,
-            session_id,
-        )
+        result, booking, active_agent = _dispatch_turn(message, runtime, session_id)
         runtime.booking = booking
         runtime.active_agent = active_agent
         runtime.inbound.memory.data["channel"] = "whatsapp"
@@ -1114,6 +1543,18 @@ async def wati_webhook(request: Request) -> WhatsAppWebhookResponse:
             "sent_at": _now_iso(),
         }
         runtime.inbound.memory.save()
+
+    _latency_ms = (time.perf_counter() - _t0) * 1000
+    _publish_realtime_updates(
+        session_id,
+        runtime,
+        result,
+        None,
+        start_index=_realtime_start_index,
+        memory_before=_mem_before,
+        latency_ms=_latency_ms,
+    )
+    runtime.inbound.memory.save()
 
     response = WhatsAppWebhookResponse(
         success=True,

@@ -29,7 +29,7 @@ class SentimentAgent:
     """Conversation-wide sentiment tracker with legacy one-turn compatibility."""
 
     SIGNALS: tuple[tuple[str, tuple[str, ...], float], ...] = (
-        ("angry", ("unacceptable", "ridiculous", "furious", "very angry", "i am angry", "i'm angry", "angry", "terrible service", "useless"), 0.94),
+        ("angry", ("unacceptable", "ridiculous", "furious", "very angry", "i am angry", "i'm angry", "angry", "terrible service", "service is terrible", "useless"), 0.94),
         ("frustrated", ("frustrated", "frustrating", "going in circles", "keep suggesting", "same things", "you keep asking", "you keep repeating", "not listening", "not understanding", "i already told", "booking is wrong", "my booking is wrong", "want to speak to a human", "speak to a human", "this is wrong", "this is not helping", "this isn't helping", "not helping", "again and again", "still not working"), 0.88),
         ("confused", ("confused", "don't understand", "do not understand", "what do you mean", "not clear", "unclear"), 0.82),
         ("urgent", ("urgent", "as soon as possible", "asap", "running late", "in a hurry", "right now", "last minute"), 0.84),
